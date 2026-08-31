@@ -96,6 +96,287 @@ Semantic Versioning.
 - **Portable server runtime linkage.** The build-tree server finds llama/ggml shared libraries via
   `$ORIGIN/../bin`; moving or extracting a build no longer leaves an absolute CMake RUNPATH pointing
   at the machine that compiled it.
+## [0.24.0] - unreleased
+
+### Added
+- **`--row-stream`: dense tables the graph only gathers rows from, served from flash.** The dense
+  policy has one shape for every non-expert weight, and it is the right shape for a weight that is
+  multiplied: read it whole, keep it resident. A token embedding table is not that. The graph
+  gathers one row of it per decoded token out of a vocabulary of hundreds of thousands, and on a
+  big model that is hundreds of MiB of RAM bought for a kilobyte of use. With this flag such a
+  table is bound to reserved address space and only the rows the graph is about to read are pulled
+  in, in 16 KiB slabs, inside a bounded LRU window (`--row-stream-mb`, default 64). The
+  reservation mirrors the tensor's own byte layout, so ggml's address arithmetic is unchanged and
+  the gather kernel is untouched: the trick the expert cache plays on `mul_mat_id`, at row
+  granularity.
+
+  Which tables qualify is not a list and not a name pattern. During the capture decode every
+  reference to a dense weight is classified by how the node used it, and a table is served only if
+  every reference was a row gather taking it as the table, with an index that is materialized
+  before the node runs. Both are properties of the graph, so a model with tied embeddings, where
+  the table is also the output head, fails the first test on that matmul and is left alone on any
+  architecture without a special case; Qwen3.8-Flash-Next's 51B n-gram table is row-gathered but by
+  hashes computed inside the graph, so it fails the second and keeps the size guard measured for it
+  in 0.22.0. `IRowSource::materialize()` is the fallback if some later graph reads a served table
+  any other way: the whole table is pulled in and the run says so on stderr.
+
+  Measured, byte-identical to the resident reference in every cell. On the 12 GB test phone via
+  adb: Qwen3.8-Flash-Next UD-IQ3_XXS, pinned dense **4313 to 3816 MiB** (-497), and
+  Qwen3.6-35B-A3B UD-Q3_K_XL, pinned dense **2436 to 1921 MiB** (-515), for 0.3 MiB resident and
+  0.4 MiB of flash read across the generation, against 4.5 GB of expert reads on the same run.
+  Expert bytes, cache hit rate, evictions and re-reads are identical to the digit with the flag on
+  and off. Throughput is neutral so far: interleaved host cells on Qwen3.6-35B-A3B Q4_K_M gave 2.22
+  and 2.30 tok/s off against 2.27 and 2.31 on, a spread smaller than the one between the two
+  baselines, so the flag ships off by default and the claim it makes is about RAM, not speed. The
+  RAM is the point: on the model whose 4.3 GB pinned dense set is invisible to the kernel's reclaim
+  accounting, half a gigabyte handed back goes straight to the cause of the 2 to 7 second tokens
+  documented in 0.22.0. Gates `G15a`/`G15b` prove identity on all three tiny models, the second
+  with a window of one slab so nearly every gather re-reads what the last one handed back. New
+  port `bmoe/row_source.h`, adapter `core/src/moe/row_stream.cpp`, docs in
+  `docs/row-gathered-tables.md`, app switch **Stream row-gathered tables**.
+- **`--expert-substitute L`: cache-aware expert substitution (experimental).** Before a decode
+  routing is committed, every expert already in the LRU cache gets its score raised by `L` times this token's
+  score range and the top-k is taken again, so a resident expert takes a slot only when the router
+  scored it within that margin of the one it displaces. The same number of experts runs; fewer of
+  them cost a flash read, and the weights are the router's own. The mechanism is the
+  cache-conditional rerouting of Skliar et al. (arXiv:2412.00099) with the cache in front of flash
+  instead of DRAM and the range taken per token, so there is no calibration state. The scores are
+  read from the tensor the graph itself sorted, which is exact for any gating function and alive at
+  the callback by construction; the gate input is not (on Gemma 4 the allocator had recycled it),
+  and a new gate cell caught that. Measured on the desktop on Qwen3.6-35B at `0.15`: 258 → 119 MiB
+  of flash per token, 2.37 → 3.84 tok/s, perplexity up 1 to 4 % on two held-out texts and
+  tinyMMLU 88 → 84 of 100 (94 identical predictions), HumanEval (first 50) 42 → 42 with 69 instead
+  of 292 MiB of flash per token and 2.36 → 5.53 tok/s across a warm session; `0.30` costs 25 % in
+  perplexity, `0.60`
+  destroys the model (perplexity 31) while its prose still reads well. Experimental: one model,
+  desktop numbers, the on-device A/B still owed. Off by default, decode only, refused without a cache and outside `[0, 1]`. The run summary, the CSV
+  (`experts_reranked`, `experts_substituted`, `substitute_lambda`) and the app's metrics view carry
+  its actual bite. See [docs/cache-aware-substitution.md](docs/cache-aware-substitution.md).
+- **`--ppl FILE`: teacher-forced perplexity, and `--ppl-step` for the decode regime.** Scores a
+  fixed text instead of generating one, with the mean NLL, the perplexity and the next-token hit
+  rate, so a lossy setting gets a scale instead of a coin flip: greedy output only moves when a
+  perturbation crosses an argmax boundary, whatever its size. `--ppl-step` scores one token per
+  decode. A wide batch routes every position of a layer before reading any of it, so a policy that
+  consults the cache barely fires there (1 to 3 % of the slots it examined, against 26 to 28 % in
+  decode) and the number says nothing about it; stepping is the regime the policy acts in. Both
+  policies report what they did (`ppl-policy:`), so an inert flag cannot pass unnoticed.
+  `--ppl-list FILE` scores many texts in one session and `--ppl-choices A,B,...` reports each
+  choice's log-probability after the text, which is what a multiple-choice benchmark compares;
+  `scripts/tinymmlu-bench.py` runs tinyMMLU on top of them, one cell per setting, and
+  `scripts/humaneval-bench.py` runs HumanEval over `--session` and grades the completions.
+- **"Prefer cached experts" in the app**, under Speed / quality → Experimental, as a percentage of
+  the score range (10 to 30, default off, disabled with the cache off), with a warning from 20 % up.
+  Listed under the app's Experimental group.
+- **Qwen3.8-Flash-Next Q2_K in the app catalog**, next to the UD-IQ3_XXS. Its dense side is at
+  2-4 bit: 2.4 GB pinned instead of 4.3, on a phone where that set is walked every token and is what
+  caps the expert cache. A plain `llama-quantize` build without an importance matrix, so the experts
+  are coarser than the UD file's; the row says so. Six shards, ~80 GB, downloaded and resumed like
+  the other sharded entries. Every published dynamic quant of this model keeps the dense side at
+  5-8 bit whatever its overall size; this is the one file that does not.
+
+### Changed
+- **Every run says which mode it ran in, and `--moe-stream` now brings a cache with it.** A first
+  command with nothing but `-m`, `-p` and `-t` ran plain llama.cpp on mmap: no streaming, no cache,
+  and a dense policy that only applies once streaming is on. The report said none of this, because
+  the `moe-stream:` block only prints when streaming is enabled, so a baseline run read as a
+  measurement of this engine. Two changes: a `mode:` line is printed unconditionally, naming the
+  flag when a MoE model ran without streaming, and `--cache-mb` defaults to `auto` whenever
+  `--moe-stream` is on, since the previous default of 0 meant the cache was off. On a 16 GB host
+  streaming Qwen3.6-35B-A3B Q4_K_M, the cache default alone is 1.16 to 2.35 tok/s and 585 to 238
+  MiB read per token, same output. An explicit `--cache-mb` or `BMOE_CACHE_MB` still wins,
+  including an explicit 0, and the library's own default is unchanged: the CLI resolves this, so an
+  embedder passing 0 still means no cache. Reported by @eiffel31 (#186).
+- The CSV summary trailer gains `row_table_MiB`, `row_resident_MiB`, `row_rows`, `row_reads`,
+  `row_read_MiB`, `row_evictions` and `row_io_errors`, and a `moe-rows:` end-of-run line appears
+  when a table qualified. All are absent from the per-token rows, which the policy does not touch.
+- `--cache-mb auto` no longer reserves the size of a row-streamed table for a conversion that will
+  not happen. It deducts the window instead, so the cache gets the RAM the policy freed rather than
+  the engine planning for both.
+- **macOS reads uncached (`F_NOCACHE`), and `o_direct` reports the open's real outcome everywhere.**
+  A direct request on Apple applies `fcntl(F_NOCACHE, 1)` to every reader descriptor — the kernel
+  stops caching that file's pages — instead of silently returning a buffered fd (Apple has no
+  `O_DIRECT`). It is a caching hint, not an I/O mode: no alignment contract, no DMA promise, so a
+  direct reader on Apple keeps ordinary `pread` semantics and skips the O_DIRECT bounce path rather
+  than inheriting Linux-only alignment requirements. Independently, the `o_direct` telemetry field
+  (CSV preamble, decode-trace header, streaming banner) now comes from what the shard opens
+  achieved — the AND across shards, after every platform refusal and open-time downgrade — instead
+  of from the requested configuration, so a run served buffered says `0` on every platform. Host
+  measurements in the PR (#179).
+
+### Fixed
+- A sharded catalog entry (DeepSeek V4 Flash, Qwen3.8-Flash-Next) read as on-device as soon as its
+  first shard landed, which is the smallest file of the set and arrives seconds into the download:
+  the row lost its progress bar, a Run on the incomplete set failed at load, and if the download
+  chain died there was no Download button left to resume it. The legacy-merged-file rule, meant for
+  a single-file gpt-oss from an earlier release, now applies only when the entry's file name is not
+  one of its shards. The app module gains its first JVM unit test for the rule, run in CI.
+
+## [0.23.0] - 2026-08-29
+
+### Fixed
+- **Windows `bmoe-cli.exe` looked broken when double-clicked (#181).** A console program started
+  from Explorer gets a console of its own, prints its usage because no model was given, exits,
+  and the console vanishes with it: a window that flashes and disappears, indistinguishable from a
+  crash. Now, when the console was created for this process alone, the no-model path says it is a
+  command-line program and waits for Enter before closing; from a terminal nothing changes. The
+  release archive's README.txt opens with the same fact and a complete Windows command, and no
+  longer points a Windows user at a bash script as the only instruction. The Windows build also
+  links the MSVC runtime statically, so the exe no longer needs the VC++ Redistributable to start.
+
+
+### Added
+- **Prefill-phase attribution in `BMOE_DONE` and the CSV `# summary`.** `prefill_cpu_s` /
+  `prefill_read_mib` / `prefill_io_s` / `prefill_stall_s` / `prefill_mgmt_s`: the prompt phase's
+  own split of the same cumulative counters the decode fields come from, as session-level deltas
+  across the prefill chunks — the streamer is untouched. On a >RAM model the prompt is what the
+  user actually waits for before the first token, and until now the phase carried a single bare
+  wall number (`prefill_s`) with no compute/flash split; these keys are what settles which of
+  the two binds at a given prompt length (#173). The CSV `# summary` trailer carries the same
+  five raw fields under the same names and units — appended keys, so existing readers ignore
+  them. Host measurements in the PR.
+
+## [0.22.0] - 2026-08-28
+
+### Added
+- **Qwen3.8-Flash-Next (`qwen4exp`) recipe.** The Qwen4 architecture preview (125B total, ~6B
+  active) routes over 512 experts at top-10 plus one always-on shared expert that stays resident;
+  the experts name the standard split suffixes, so streaming is one registry row. The hybrid
+  gated-delta SSM / sparse attention stack, its indexer and the per-block hyper-connection
+  tensors are dense-side llama.cpp code, invisible to the streaming seam. What is new is one
+  resident tensor: `per_layer_token_embd`, the n-gram embedding table, a single 2-D tensor of
+  320,001,536 rows carrying 51.2 B parameters (~28.8 GB at IQ4_NL, about 43 % of a released
+  file), read sixteen 160-wide rows per token. Not indexed by expert, so not streamed; see the
+  guard below for why it no longer kills the run. Runs on the 12 GB test phone at 1.79 tok/s
+  (UD-IQ3_XXS, dense weights pinned, 1250 MiB cache): the first model this engine has met that is
+  compute-bound on device, 81 % of a token in compute against 11 % waiting on flash, because its
+  4.3 GB dense side is walked every token. Pinned dense weights are a requirement here, not a
+  tuning: `anon` swaps 6 GB to zram and stalls for 12-20 s on single tokens, `mmap` refaults the
+  whole dense set every token (0.05 tok/s). Listed in the app catalog as a three-shard download
+  (~82 GB on disk). The README hero clip is a later in-app run of the same file: 2.03 tok/s over
+  a 72-token answer, cache 1000 MiB, cold experts dropped at 100 %, 54 % cache hit, real time.
+  On the final pin (`b10666`) three in-app runs of that prompt averaged 2.5-2.6 tok/s (second-half
+  median 2.6-2.7), and the same argv over `adb shell` produced byte-identical output at 2.2 tok/s
+  under the shell's lower CPU frequency cap. The one slow token each run shows (2-7 s, tens of
+  thousands of major faults, RSS falling and zram swap rising by the same 200-500 MiB) is the
+  kernel reclaiming the anonymous expert cache under the ~0.9 GB the pinned dense set leaves
+  free; it does not appear over adb, where the app's own footprint is absent and 1.3 GB stays
+  free. Freeing dense RAM (requantizing the dense side offline) is the lever, not the cache.
+- **Engine reports 0.22.0.** `project(VERSION)` in `CMakeLists.txt` is moved with the app version
+  this time, so no metrics CSV from this release names the previous engine.
+- **Dense tensors larger than available memory stay mmap'd.** The dense policy assumed the
+  largest dense tensor was an embedding or lm_head and read every dense tensor whole into its
+  own buffer. On `qwen4exp` that meant Anonymous asked for a 28.8 GB allocation and Pinned hit
+  the dma-buf ceiling, either way dying at load, for a table the graph touches a kilobyte at a
+  time. A dense tensor larger than the kernel's `MemAvailable` is now held back under every mode:
+  it stays mmap'd, leaves the warm sweep and the residency sensor (which would otherwise report a
+  dense set that can never be resident), is not counted by the auto cache budget as a conversion
+  to reserve for, and gets `MADV_RANDOM` so a fault maps one page instead of a readahead window
+  the gather never touches. The rest of the dense weights still get the mode the run asked for,
+  and one stderr line names what was held back and why. The bound is size, not access shape: a
+  row-gathered table that fits keeps its mode, because demand-faulting one that fits measured
+  −16 % decode (#135). Inert on every other supported model: Qwen3.6-35B reads the same 1785 MiB
+  into the same 613 buffers under `anon`, and `warm` and `mmap` match their baselines to the
+  decimal. See [docs/android-memory.md](docs/android-memory.md).
+
+### Added
+- **Community benchmarks.** `scripts/bench-report.sh MODEL.gguf` runs the fixed README protocol on
+  any Linux/macOS host (256 greedy tokens, the reference prompt, auto cache, 4 lanes, overlap,
+  dense weights out of the page cache), records CPU / RAM / drive and the drive's measured
+  O_DIRECT rate at 512 KiB requests from the model file itself, and prints the two markdown tables
+  a report needs, every column read from the CSV `# summary` trailer by name. A `benchmark-report`
+  issue form collects them and [docs/community-benchmarks.md](docs/community-benchmarks.md) holds
+  the protocol, the hardware wanted and the results table, seeded with the README rows. Any
+  supported MoE in any quantization is a row; the catalog models are listed as the ones that line
+  up with the README, not as a requirement.
+- **Prebuilt `bmoe-cli` on every release.** A `release-host` workflow builds a static, portable
+  CLI for Linux x86_64 / aarch64, macOS arm64 and Windows x86_64 from a clean checkout of the tag
+  and attaches the archives to the release, so a benchmark contributor downloads one file and runs
+  `BMOE_CLI=... scripts/bench-report.sh` with no toolchain. Portability over speed: `GGML_NATIVE=OFF`,
+  x86_64 assumes AVX2, aarch64 assumes armv8.2-a+dotprod+fp16; anything older builds from source.
+
+### Changed
+- **llama.cpp submodule bumped** to upstream `4e97ac8` (tag `b10666`), the first master with
+  [ggml-org/llama.cpp#27742](https://github.com/ggml-org/llama.cpp/pull/27742) (Qwen3.8-Flash-Next
+  support) merged, with the expert-ready hook rebased on top, still a single-commit delta over
+  stock upstream. The recipe was written against the PR head and needed nothing changed for the
+  merged form: same `qwen4exp` architecture string, same expert suffixes, same
+  `per_layer_token_embd` tensor, and the Unsloth ggufs the catalog points at are the files
+  converted on release day. Byte-identity gates pass on the new base. App version 0.22.0
+  (versionCode 37).
+- **Telemetry attribution stops calling unmeasured runtime "compute".** Overlap `stall` is now the
+  **union of stalled intervals** — the cumulative wall time during which at least one compute thread
+  was blocked on a streamed expert — instead of the summed per-thread block time divided by the
+  thread count, a mean that understated the stall whenever a minority of threads did the waiting and
+  quietly dumped the difference into the `compute_ms` residual. The residual `compute_ms` /
+  `compute_s_tok` fields keep their existing meaning for protocol compatibility. The app panel now
+  draws four bars — compute (process CPU time over the compute threads, an attribution proxy),
+  flash wait (measured `io`/`stall`, in the end-of-run summary too: `io_s_tok`/`stall_s_tok` instead
+  of inverting the clamped residual), cache mgmt, and **unattributed** (the off-CPU wall time — zram,
+  preemption, faults — the residual used to absorb).
+- **Compatibility note:** under `--overlap`, `stall_ms` and `stall_s_tok` changed meaning — they are
+  the critical-path union now — so these columns are **not comparable with CSVs produced by older
+  releases**; compare them only within one engine version. Fixes #98.
+- **The benchmark docs are a guide now, not a lab notebook.**
+  [`community-benchmarks.md`](docs/community-benchmarks.md) opens with a "start here" for the three
+  cases a contributor is actually in — PC or laptop, Android phone, Apple hardware — each with the
+  command and what to paste back, plus the settings-override table that used to be one buried
+  sentence and an explicit adb protocol for phones. "Hardware we want to see" moved to the end and
+  became open questions: as the second section it read as a shopping list, when the point is that
+  any hardware is a useful row. [`benchmark-method.md`](docs/benchmark-method.md) drops the
+  reference device from its opening (named once at the end, as the provenance of the published
+  numbers) and gains the section it was missing: what each knob does, when to move it, and which
+  telemetry field says whether moving it worked. The issue form asks for the RAM regime explicitly.
+- **The community protocol pins `--ubatch 512`**, which the Android app has always done and
+  `scripts/bench-report.sh` never did. Prefill width costs resident memory (320 MiB reserved at a
+  2048 context against 80 MiB at 512) and every reserved MiB is one the expert cache does not get,
+  so a host row was quietly running a different configuration from the app it is compared against.
+  Override with `UBATCH=`; `UBATCH=0` restores the old full-width behaviour. The five maintainer
+  rows in the table predate this and are marked as such.
+- **The app path says which settings to change.** An in-app row was being invited without saying
+  that the app ships cold-expert dropping at 75 %, a lossy speedup the CLI protocol does not use, so
+  a telemetry screenshot was not the configuration it was being compared against. The page now names
+  the three settings to match (dropping off, cache auto, context 2048) and says that a phone row
+  cannot fill the storage-rate column.
+- **Two platform limits written down** in [`limitations.md`](docs/limitations.md). macOS has no
+  `O_DIRECT` and the engine does not call the `F_NOCACHE` equivalent, so expert reads there go
+  through the page cache — while the metrics still say `o_direct=1`, because that field records the
+  requested configuration rather than what the open did. And there is no iOS target, so there is no
+  supported way to run the engine on an iPhone or iPad. Both were already true and undocumented.
+
+## [0.21.0] - 2026-08-25
+
+### Added
+- **The expert cache says when it cannot hit.** One token's worst-case routed bytes are priced at
+  load from the model's shape alone — every bound layer's expert-entry bytes times
+  `min(top_k, n_expert)`, at the top-k the run actually applies — and the engine prints one stderr
+  line when the resolved budget falls under it. Below that cycle global LRU evicts precisely what
+  it is about to read, so the hit rate is 0 % while the run still pays the management and the RAM.
+  It warns rather than refuses: the budget is legal and the output byte-identical, so the engine
+  states the fact and leaves the choice alone. The number is not the fixed `cache_min_mb` floor,
+  which is what made this invisible: a budget can clear the floor and still sit under *this* model's
+  cycle, and `--n-expert-used` widens the cycle without touching the budget. Validated on device on
+  Gemma 4 26B (cycle 902 MiB: 800 MiB measures a 0.0 % hit against 26.8 % at 950 MiB, decode
+  1.42 → 2.01 tok/s across that gap) and Qwen3.6-35B (cycle 582 MiB: 500 MiB measures 0.0 % against
+  36.0 % at 650 MiB). By @gjjkbssg (#165, #167).
+- **`cache_cycle_mb` in the metrics preamble.** The same number, recorded next to the budget it
+  should be judged against, so a committed CSV says on its own whether its cache could ever have
+  hit — no second run of the same model and top-k to compare with. Named and explained in the app's
+  metrics view like every other cache field, rather than falling through as a raw key. See
+  [docs/telemetry.md](docs/telemetry.md) and [docs/cache-sizing.md](docs/cache-sizing.md).
+
+### Changed
+- **Finer expert-cache rungs below 2000 MiB in the app.** The ladder went 500 → 1000 → 2000, and
+  that x2 is where the choice is sharp: on an 8 GB phone 1000 MiB runs and 2000 MiB gets the app
+  killed by the OS, so the step handed the user a cliff instead of a setting. 1250, 1500 and 1750
+  fill it; above 2000 the existing 1000 MiB step is a small fraction of the budget and is unchanged.
+  Reported by @eiffel31 (#146).
+
+### Fixed
+- **The build reports its own version again.** `project(VERSION)` in the top-level `CMakeLists.txt`
+  still said `0.19.0` after 0.20.0 was cut, and since that is the single source of `BMOE_VERSION`,
+  every 0.20.0 build self-reports as 0.19.0 — in `bmoe-cli --version` and in the `engine=` line of
+  every metrics CSV it wrote. Any CSV committed between 2026-08-17 and this release names the wrong
+  engine; nothing else was affected. Reported by @gjjkbssg (#163).
 
 ## [0.20.0] - 2026-08-17
 

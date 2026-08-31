@@ -64,7 +64,8 @@ MtmdPrefillResult MtmdRuntime::prefill(llama_context * lctx,
             return out;
         }
         mtmd_helper_bitmap_wrapper decoded = mtmd_helper_bitmap_init_from_buf(
-            ctx_.get(), input.bytes.data(), input.bytes.size(), /*placeholder*/ false);
+            ctx_.get(), input.bytes.data(), input.bytes.size(), /*placeholder*/ false,
+            mtmd_helper_init_opt_default());
         if (!decoded.bitmap) {
             out.error = "failed to decode media: " + input.name;
             return out;

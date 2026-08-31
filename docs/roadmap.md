@@ -116,11 +116,13 @@ than merged — a measured regression does not belong in the engine.
 The transferable lesson: a hit-rate curve is not a throughput argument. Any future policy has to
 be measured on device, however good its simulation.
 
-What is still worth doing here is **not** a policy but a guard. Global LRU's recency order is
-anti-correlated with the deterministic layer cycle, so below one token cycle it evicts precisely
-what it is about to read and the hit rate goes to **exactly 0 %** — reproduced on device at a
-budget the CLI accepts today. The worst-case cycle is computable at init from model shape alone,
-so refusing or warning on a budget under it costs almost nothing.
+What was still worth doing here was **not** a policy but a guard, and it has shipped. Global LRU's
+recency order is anti-correlated with the deterministic layer cycle, so below one token cycle it
+evicts precisely what it is about to read and the hit rate goes to **exactly 0 %** — reproduced on
+device at a budget the CLI accepts today. Since the worst-case cycle is computable at init from
+model shape alone, the engine now prices it there, records it as `cache_cycle_mb`, and warns when
+the resolved budget falls under it. It warns rather than refuses: the budget is legal and the run is
+byte-correct, it just cannot hit. See [cache-sizing.md](cache-sizing.md).
 
 ## More architectures
 
@@ -129,6 +131,17 @@ so refusing or warning on a budget under it costs almost nothing.
 routed) are supported; other `build_moe_ffn` models are one recipe row each. The remaining
 frontier is architectures whose routing node is not the shared `ffn_moe_topk` — custom gating,
 which the capture/stream hook would need to learn. See [adding-a-model.md](adding-a-model.md).
+
+## Steering the routing toward what is resident — built, measured on the desktop
+
+`--expert-substitute` ([cache-aware-substitution.md](cache-aware-substitution.md)) re-ranks each
+decode routing toward the experts already in the cache, by a margin that is a fraction of the
+token's own score range. It is the mechanism of Skliar et al. (arXiv:2412.00099) with the cache in
+front of flash instead of DRAM, and on the desktop it is the strongest lever measured at its
+quality cost: half the flash bytes per token and +62% decode for a 1 to 4% perplexity increase at
+`0.15`. What it owes is the same device A/B as dropping, and a task-level quality check, since the
+desktop's flash share of a token is larger than the phone's and the throughput column will
+compress.
 
 ## Skipping reads the router barely wants — built, unmeasured
 

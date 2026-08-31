@@ -208,6 +208,17 @@ ValidationResult validate(const RunConfig & cfg) {
                     "streamer isolates, and off the streaming path there is nothing to commit to");
     }
 
+    // The row policy is discovered during the streamer's capture decode and acted on in its eval
+    // callback; without streaming neither exists. It is also not a dense-mode variant — it applies
+    // under every DenseWeightsMode, because what it changes is which tensors the mode is applied to.
+    if (cfg.moe.row_stream && !cfg.moe.enabled) {
+        return fail("moe.row_stream requires moe.enabled: the tables it serves are discovered by the "
+                    "capture pass and fed by the eval callback, neither of which runs off the streaming path");
+    }
+    if (cfg.moe.row_stream_mb < 0) {
+        return fail("moe.row_stream_mb must be >= 0 (0 = the built-in window)");
+    }
+
     if (cfg.moe.enabled) {
         const MoeStreamConfig & m = cfg.moe;
         if (m.io_threads < 1 || m.io_threads > MoeStreamConfig::io_threads_max) {
@@ -301,6 +312,17 @@ ValidationResult validate(const RunConfig & cfg) {
             return fail("moe.drop_cold_frac must be in [0, 1] (0 = off). Above 1.0 the threshold can "
                         "exceed the largest weight in a routing, which would discard every expert of a "
                         "layer; 1.0 is the uniform share 1/n_expert_used and the useful maximum.");
+        }
+        if (m.substitute_lambda > 0.0f && !cache_on) {
+            return fail("moe.substitute_lambda requires the LRU cache (cache_mb > 0 or cache_auto): with the "
+                        "cache off nothing is resident, so there is nothing to prefer and the re-ranking "
+                        "would be the router's own.");
+        }
+        // Negated inclusive range, so NaN is rejected here too.
+        if (!(m.substitute_lambda >= 0.0f && m.substitute_lambda <= 1.0f)) {
+            return fail("moe.substitute_lambda must be in [0, 1] (0 = off). At 1.0 a resident expert "
+                        "outranks every non-resident one whatever their scores, which is the strongest "
+                        "preference the margin can express.");
         }
     }
 

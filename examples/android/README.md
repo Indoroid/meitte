@@ -28,6 +28,9 @@ research harness and keeps the app a thin driver over the CLI.
    adb install app/build/outputs/apk/dev/debug/app-dev-debug.apk
    ```
 
+   The app's pure-Kotlin rules (catalog status and the like) have JVM unit tests under
+   `app/src/test`; CI runs them, and so does `./gradlew testDevDebugUnitTest`.
+
    Published sideload builds are signed with a stable key instead, so an update installs over
    the previous one rather than being refused. That needs a `keystore.properties` next to `app/`
    (gitignored — it points at the keystore and holds its passwords); without it, builds fall back
@@ -95,7 +98,7 @@ check). Nothing below needs a storage permission except the last option.
    adb shell mv /data/local/tmp/shardllm /data/local/tmp/bmoe
    ```
 
-### Sharded models (gpt-oss-120b, DeepSeek V4 Flash)
+### Sharded models (gpt-oss-120b, DeepSeek V4 Flash, Qwen3.8-Flash-Next)
 
 Models above Hugging Face's 50 GB per-file limit ship as several shard files
 (`-00001-of-0000N.gguf`). The engine streams a split set natively, so these download in-app
@@ -111,7 +114,27 @@ the first one:
 adb push DeepSeek-V4-Flash-0731-UD-IQ2_M-0000*-of-00003.gguf /data/local/tmp/bmoe/
 ```
 
-Mind the space: DeepSeek V4 Flash UD-IQ2_M is ~91 GB on disk.
+Mind the space: DeepSeek V4 Flash UD-IQ2_M is ~91 GB on disk, Qwen3.8-Flash-Next UD-IQ3_XXS ~82 GB
+and its Q2_K build ~80 GB.
+
+Qwen3.8-Flash-Next needs **Dense weights = Pinned (dma-buf)** in Settings. Its dense side is 4.3 GB
+and every token walks it: with Anon the kernel swaps it to zram and single tokens stall for 10-20 s,
+with Mmap it is refaulted from flash every token. Its 51B n-gram table is held back automatically and
+stays mmap'd whatever the setting; the engine says so on stderr at load. Keep the expert cache at
+1000-1500 MiB on a 12 GB phone: the pinned dense set leaves no room for more.
+
+The catalog also offers a **Q2_K build of Qwen3.8-Flash-Next** (DevQuasar) whose dense side is at
+2-4 bit: 2.4 GB pinned instead of 4.3, which is ~2 GB the expert cache can have back. It is a plain
+`llama-quantize` build without an importance matrix, so its experts are coarser than the UD-IQ3_XXS
+ones; pick it when the cache, not expert precision, is what limits the phone. Every published dynamic
+quant of this model keeps the dense side at 5-8 bit whatever its overall size, which is why the two
+builds sit side by side.
+
+**Stream row-gathered tables** takes ~500 MiB more off that pinned set on this model, and 515 MiB
+on Qwen3.6: the token embedding table is read one row per token, so it does not need to be in
+RAM at all. The reply is identical either way. It is off by default until a long run on a phone
+says whether the RAM it hands back is worth the reads, which is exactly the kind of thing this
+app exists to find out.
 
 ## Expected numbers
 
@@ -144,3 +167,10 @@ Two worth knowing before you turn them on:
 - **"Decide the experts early"** (`--route-ahead`) commits each layer's routing before that layer
   runs, so the reads can never be wasted. It changes the reply, and it is refused alongside guessing
   ahead. See `../../docs/route-ahead.md`.
+- **"Stream row-gathered tables"** (`--row-stream`) serves the token embedding table out of flash
+  instead of RAM. Lossless, and which tables it applies to is read off the model's own graph, so
+  on a model where none qualify it does nothing. See `../../docs/row-gathered-tables.md`.
+- **"Prefer cached experts"** (`--expert-substitute`) steers each routing toward experts already
+  in RAM, so the same number of experts runs but fewer are read from flash. It changes the reply,
+  and past 20% the reply keeps reading well while the model behind it is much worse: judge it on
+  answers you can check. See `../../docs/cache-aware-substitution.md`.

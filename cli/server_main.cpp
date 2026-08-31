@@ -1465,6 +1465,8 @@ static void print_usage(const char * argv0) {
                 "      --cache-ceil-mb N  cap auto cache sizing; 0 means no cap\n"
                 "      --io-threads N     parallel expert-read lanes (default 4)\n"
                 "      --no-odirect       use the OS page cache instead of direct expert reads\n"
+                "      --row-stream       serve graph-row-gathered dense tables from flash\n"
+                "      --row-stream-mb N  row-stream resident window in MiB (default 64)\n"
                 "      --dense-weights M  mmap|warm|anon|ahwb placement for non-expert weights\n"
                 "      [DEPRECATED] --dense-odirect maps to anon; --no-warm-dense maps to mmap\n"
                 "      --load-all         debug baseline: load every expert each token\n"
@@ -1474,6 +1476,7 @@ static void print_usage(const char * argv0) {
                 "      --prefetch K       prefetch the next K layers using prior-token routing\n"
                 "      --prefetch-sync    debug mode that waits for each speculative read\n"
                 "      --drop-cold-experts F  lossy cache-miss drop threshold in (0,1]\n"
+                "      --expert-substitute L  lossy cache-aware reranking margin in [0,1]\n"
                 "      --drop-no-renorm   do not renormalize routing weights after a drop\n"
                 "      --drop-in-prefill  permit cold-expert dropping during prompt prefill\n"
                 "      --route-ahead N    lossy routing substitution N layers early (0..8)\n"
@@ -1681,6 +1684,10 @@ int main(int argc, char ** argv) {
             cfg.moe.io_threads = std::atoi(next("--io-threads"));
         else if (a == "--no-odirect")
             cfg.moe.o_direct = false;
+        else if (a == "--row-stream")
+            cfg.moe.row_stream = true;
+        else if (a == "--row-stream-mb")
+            cfg.moe.row_stream_mb = std::atoi(next("--row-stream-mb"));
         else if (a == "--dense-weights") {
             const std::string m = next("--dense-weights");
             if (m == "mmap")
@@ -1715,6 +1722,8 @@ int main(int argc, char ** argv) {
             cfg.moe.prefetch_sync = true;
         else if (a == "--drop-cold-experts")
             cfg.moe.drop_cold_frac = (float) std::atof(next("--drop-cold-experts"));
+        else if (a == "--expert-substitute")
+            cfg.moe.substitute_lambda = (float) std::atof(next("--expert-substitute"));
         else if (a == "--drop-no-renorm")
             cfg.moe.drop_renorm = false;
         else if (a == "--drop-in-prefill")

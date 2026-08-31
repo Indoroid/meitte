@@ -58,6 +58,25 @@ data class AppSettings(
     // share itself). Stored as an Int because the settings are integer rungs; the flag takes a
     // fraction. LOSSY and cache-dependent — it changes the output, and not reproducibly.
     val dropColdPct: Int = 75,
+    // Serve the dense tables the graph only GATHERS ROWS from - a token embedding - out of flash
+    // instead of RAM. Which tables qualify is decided by the graph at load, so this is one switch
+    // for every model rather than a per-model list; on a model where nothing qualifies it does
+    // nothing at all. Lossless by construction (the rows read are the rows the graph asks for),
+    // so the only question it raises is whether the reads cost more than the RAM is worth - which
+    // is why it is off until the on-device A/B says otherwise.
+    val rowStream: Boolean = false,
+    // Cache-aware substitution, as a PERCENTAGE of the router's score range (0 = off). Before a
+    // routing is committed, every expert already resident gets its score raised by this fraction of
+    // the range and the top-k is taken again, so a resident expert wins a slot only when it was
+    // within that margin of the one it displaces. It runs the SAME number of experts — it just
+    // needs fewer of them read from flash.
+    //
+    // Measured on the host at 15% (docs/cache-aware-substitution.md): half the flash bytes per
+    // token, +62% decode, perplexity up 1-4%. At 30% perplexity is up 25%; at 60% the model is
+    // destroyed (perplexity 31 against 4.2) while the text still reads well, which is why the rungs
+    // stop at 30 and the screen warns from 20. LOSSY and cache-dependent, like dropping. 0 until
+    // the on-device A/B earns it a default.
+    val substitutePct: Int = 0,
     // Which source drafts for self-speculation: "off", "mtp" or "ngram". Both verify the same way —
     // one wider decode, greedy acceptance — and differ only in what a draft costs.
     //
@@ -164,6 +183,13 @@ data class AppSettings(
             // same cacheOn condition that guards prefetch guards this. The engine takes a fraction
             // of the uniform share; the setting is stored as a percentage.
             if (dropColdPct > 0 && cacheOn) a += listOf("--drop-cold-experts", (dropColdPct / 100.0).toString())
+            // Row-gathered dense tables. Inside the streaming block because the tables are
+            // discovered by the streamer's capture pass; independent of the cache and of the
+            // dense-weight mode, since what it changes is which tensors that mode applies to.
+            if (rowStream) a += "--row-stream"
+            // Same cacheOn guard and for the same reason: with no cache there is nothing resident
+            // to substitute toward, so the policy would re-rank against an all-miss mask.
+            if (substitutePct > 0 && cacheOn) a += listOf("--expert-substitute", (substitutePct / 100.0).toString())
         }
         // Outside the streaming block on purpose: speculation is a decode-loop change, not a
         // residency policy, so it applies to the mmap baseline too — which is what makes an A/B of
@@ -209,6 +235,8 @@ data class AppSettings(
             .putInt("predictSpecMax", predictSpecMax)
             .putInt("routeAhead", routeAhead)
             .putInt("dropColdPct", dropColdPct)
+            .putBoolean("rowStream", rowStream)
+            .putInt("substitutePct", substitutePct)
             .putInt("sessionCtx", sessionCtx)
             .putString("spec", spec).putInt("mtpDraft", mtpDraft).putInt("mtpPMinPct", mtpPMinPct)
             .putBoolean("thinking", thinking)
@@ -283,9 +311,15 @@ data class AppSettings(
         // per token and returns an 8-13% hit rate from a 2000-3000 MiB budget, so its cache may
         // already be below the floor's intent while sitting well above its number. These rungs are
         // here to measure where the cache stops earning the memory pressure it creates.
+        //
+        // The rungs are dense below 2000 and coarse above it, because that is where the choice is
+        // sharp: on an 8 GB phone 1000 MiB runs and 2000 MiB gets the app killed by the OS, so a
+        // x2 step there hands the user a cliff instead of a setting. Above 2000 a 1000 MiB step is
+        // a small fraction of the budget and needs no refining.
         // See docs/android-memory.md.
         const val CACHE_AUTO = -1
-        val CACHE_CHOICES = intArrayOf(CACHE_AUTO, 0, 500, 1000, 2000, 3000, 4000, 5000, 6000)
+        val CACHE_CHOICES =
+            intArrayOf(CACHE_AUTO, 0, 500, 1000, 1250, 1500, 1750, 2000, 3000, 4000, 5000, 6000)
 
         /** True for a fixed budget the engine would reject without --force-cache. */
         fun cacheNeedsForce(mb: Int) = mb in 1 until CACHE_MIN_MB
@@ -309,6 +343,9 @@ data class AppSettings(
         // above it the threshold could exceed every weight in a routing. The rungs below it are the
         // conservative half of the curve, where the replay already beats a top-k cut on both axes.
         val DROP_COLD_CHOICES = intArrayOf(0, 50, 75, 100)
+        // Stops at 30 deliberately: 60 was measured to destroy the model while still reading well,
+        // and 30 already costs a quarter in perplexity. Below 10 the saving is not worth a rung.
+        val SUBSTITUTE_CHOICES = intArrayOf(0, 10, 15, 20, 30)
         val THREAD_CHOICES = intArrayOf(2, 4, 6, 8)
         val NPREDICT_CHOICES = intArrayOf(16, 32, 48, 64, 128, 256, 512, 1024, 2048)
 
@@ -341,6 +378,8 @@ data class AppSettings(
                 predictSpecMax = p.getInt("predictSpecMax", d.predictSpecMax),
                 routeAhead = p.getInt("routeAhead", d.routeAhead),
                 dropColdPct = p.getInt("dropColdPct", d.dropColdPct),
+                rowStream = p.getBoolean("rowStream", d.rowStream),
+                substitutePct = p.getInt("substitutePct", d.substitutePct),
                 sessionCtx = p.getInt("sessionCtx", d.sessionCtx),
                 spec = run {
                     val saved = p.getString("spec", null)

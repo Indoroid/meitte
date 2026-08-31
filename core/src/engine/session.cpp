@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -125,7 +126,6 @@ llama_flash_attn_type to_flash_attn(FlashAttentionMode mode) {
 struct GenTally {
     // Fixed for the run; kept here so record() needs only the token's own measurements.
     bool overlap = false;
-    int n_threads = 1;
 
     long long prev_bytes = 0;
     double prev_io_s = 0.0;
@@ -190,7 +190,11 @@ struct GenTally {
         m.io_ms = (st->read_seconds - prev_io_s) * 1000.0;
         m.mgmt_ms = (st->mgmt_seconds - prev_mgmt_s) * 1000.0;
         if (overlap) {
-            m.stall_ms = (st->stall_seconds - prev_stall_s) * 1000.0 / n_threads;
+            // stall is already wall-additive (the union of stalled intervals), so no thread-count
+            // normalization: dividing summed thread time by n_threads was a mean that understated
+            // the stall whenever a minority of threads did the waiting, and the difference quietly
+            // became "compute".
+            m.stall_ms = (st->stall_seconds - prev_stall_s) * 1000.0;
             m.compute_ms = m.wall_ms - m.stall_ms - m.mgmt_ms;
         } else {
             m.compute_ms = m.wall_ms - m.io_ms - m.mgmt_ms;
@@ -212,6 +216,40 @@ struct GenTally {
         stall_seconds += m.stall_ms / 1000.0;
         drain_seconds += m.drain_ms / 1000.0;
         adopt_seconds += m.adopt_ms / 1000.0;
+    }
+};
+
+// The prompt phase's measurement, the prefill counterpart of GenTally above: the source's
+// counters are cumulative across a warm session, so begin() pins them (with the process CPU
+// clock) just above the prompt chunk loop and end() closes the deltas just after it — the same
+// wall-additive terms the decode fields report, read with the same rules. end()'s sample is the
+// phase boundary itself: the decode baseline below seeds its cursors from it, so prefill's end
+// and decode's start are one reading of the counters, not two that could drift apart.
+struct PrefillTally {
+    IExpertSource::Stats pre;
+    double cpu0 = 0.0;
+
+    // Deltas across this turn's prefill chunks — valid after end().
+    double cpu_seconds = 0.0;
+    double read_mib = 0.0;
+    double io_seconds = 0.0;
+    double stall_seconds = 0.0;
+    double mgmt_seconds = 0.0;
+
+    // The stats sample end() closed on, for the decode baseline to start from.
+    IExpertSource::Stats post;
+
+    void begin(bool moe_on, const IExpertSource & src) {
+        pre = moe_on ? src.stats() : IExpertSource::Stats{};
+        cpu0 = pio::process_cpu_seconds();
+    }
+    void end(bool moe_on, const IExpertSource & src) {
+        post = moe_on ? src.stats() : IExpertSource::Stats{};
+        cpu_seconds = pio::process_cpu_seconds() - cpu0;
+        read_mib = (double) ((long long) post.read_bytes - (long long) pre.read_bytes) / (1024.0 * 1024.0);
+        io_seconds = post.read_seconds - pre.read_seconds;
+        stall_seconds = post.stall_seconds - pre.stall_seconds;
+        mgmt_seconds = post.mgmt_seconds - pre.mgmt_seconds;
     }
 };
 
@@ -390,6 +428,172 @@ ThinkControl Session::think_control() const {
 void Session::set_cache_budget_mb(int mib) {
     impl_->source.set_cache_budget((size_t) std::max(0, mib) * 1024ull * 1024ull);
 }
+// Teacher-forced perplexity. See PplRequest for why the batch is labelled decode.
+PplResult Session::perplexity(const PplRequest & req) {
+    auto & im = *impl_;
+    PplResult r;
+    const auto t0 = clock_t_::now();
+    llama_context * ctx = im.ctx.get();
+
+    std::vector<llama_token> tokens(req.text.size() + 8);
+    int n = llama_tokenize(im.vocab, req.text.c_str(), (int) req.text.size(), tokens.data(), (int) tokens.size(),
+                           /*add_special*/ true, /*parse_special*/ false);
+    if (n < 0) {
+        tokens.resize(-n);
+        n = llama_tokenize(im.vocab, req.text.c_str(), (int) req.text.size(), tokens.data(), (int) tokens.size(), true,
+                           false);
+    }
+    if (n < 2) {
+        r.error = "text too short to score";
+        return r;
+    }
+    tokens.resize(n);
+    if (n > im.cfg.n_ctx) {
+        r.error =
+            "text of " + std::to_string(n) + " tokens exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) + ")";
+        return r;
+    }
+    r.n_tokens = n;
+
+    llama_memory_clear(llama_get_memory(ctx), true);
+    im.kv_tokens.clear();
+
+    // Warm-up graph, discarded. Both routing policies decide at the terminal node of each layer's
+    // weight chain, and which node that is gets LEARNED from the first graph of a run — so on a
+    // single-batch pass they would never fire at all, and every cell would score the baseline. One
+    // throwaway decode teaches the hook the shape; the scoring pass then runs with the policy live.
+    {
+        llama_batch warm = llama_batch_init(1, 0, 1);
+        batch_fill(warm, tokens.data(), 1, 0, false);
+        im.hook->set_batch_phase(req.as_decode ? 1 : 0);
+        const int rc = llama_decode(ctx, warm);
+        llama_batch_free(warm);
+        if (rc != 0) {
+            r.error = "warm-up decode failed";
+            return r;
+        }
+        llama_memory_clear(llama_get_memory(ctx), true);
+    }
+    const long long routed0 = im.hook->experts_routed();
+    const long long dropped0 = im.hook->experts_dropped();
+    const long long reranked0 = im.hook->experts_reranked();
+    const long long substituted0 = im.hook->experts_substituted();
+
+    // Logits at EVERY position, so one pass scores every token — llama_batch_get_one would ask for
+    // the last position only.
+    llama_batch b = llama_batch_init(im.cfg.n_batch, /*embd*/ 0, /*n_seq_max*/ 1);
+    struct BatchGuard {
+        llama_batch & b;
+        ~BatchGuard() { llama_batch_free(b); }
+    } guard{b};
+
+    double nll = 0.0;
+    int scored = 0, top1 = 0;
+    int last_row = 0; // logits row of the text's final position, for the choices
+    // Score the logits at row `row` of the last decode against the token at `pos + 1`.
+    auto score = [&](int row, int pos) -> bool {
+        const float * lg = llama_get_logits_ith(ctx, row);
+        if (!lg) {
+            r.error = "no logits at position " + std::to_string(pos);
+            return false;
+        }
+        // log softmax at the token that actually follows, in a numerically safe order.
+        float max = lg[0];
+        for (int v = 1; v < im.n_vocab; ++v)
+            if (lg[v] > max) max = lg[v];
+        double sum = 0.0;
+        for (int v = 0; v < im.n_vocab; ++v)
+            sum += std::exp((double) (lg[v] - max));
+        const double logp = (double) (lg[tokens[pos + 1]] - max) - std::log(sum);
+        nll -= logp;
+        ++scored;
+        if (argmax(lg, im.n_vocab) == tokens[pos + 1]) ++top1;
+        return true;
+    };
+
+    if (req.step) {
+        // The decode regime, token by token (see PplRequest::step). The unscored prefix goes in as
+        // one prefill batch — labelled as such, so a decode-only policy stays out of it exactly as
+        // it does in generation — and every scored position is its own one-token decode.
+        const int prefix = std::max(1, std::min(req.skip, n - 1));
+        batch_fill(b, tokens.data(), prefix, /*pos0*/ 0, /*all_logits*/ false);
+        im.hook->set_batch_phase(0);
+        if (llama_decode(ctx, b) != 0) {
+            r.error = "prefill decode failed";
+            return r;
+        }
+        // With choices the last token is fed too, so the final distribution exists.
+        const int last = req.choices.empty() ? n - 1 : n;
+        for (int pos = prefix; pos < last; ++pos) {
+            batch_fill(b, tokens.data() + pos, 1, pos, /*all_logits*/ true);
+            im.hook->set_batch_phase(1);
+            if (llama_decode(ctx, b) != 0) {
+                r.error = "decode failed at position " + std::to_string(pos);
+                return r;
+            }
+            last_row = 0;
+            if (pos < req.skip || pos + 1 >= n) continue;
+            if (!score(0, pos)) return r;
+        }
+    } else {
+        for (int i = 0; i < n; i += im.cfg.n_batch) {
+            const int chunk = std::min(im.cfg.n_batch, n - i);
+            batch_fill(b, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ true);
+            im.hook->set_batch_phase(req.as_decode ? 1 : 0);
+            if (llama_decode(ctx, b) != 0) {
+                r.error = "decode failed at position " + std::to_string(i);
+                return r;
+            }
+            // Position p predicts token p+1, so the last token of the whole text is never scored
+            // and the last row of a chunk predicts the first token of the next one.
+            for (int j = 0; j < chunk; ++j) {
+                const int pos = i + j;
+                if (pos + 1 >= n || pos < req.skip) continue;
+                if (!score(j, pos)) return r;
+            }
+            last_row = chunk - 1;
+        }
+    }
+    if (!req.choices.empty()) {
+        const float * lg = llama_get_logits_ith(ctx, last_row);
+        if (!lg) {
+            r.error = "no logits after the text";
+            return r;
+        }
+        float max = lg[0];
+        for (int v = 1; v < im.n_vocab; ++v)
+            if (lg[v] > max) max = lg[v];
+        double sum = 0.0;
+        for (int v = 0; v < im.n_vocab; ++v)
+            sum += std::exp((double) (lg[v] - max));
+        const double lse = (double) max + std::log(sum);
+        for (const std::string & c : req.choices) {
+            llama_token ct[8];
+            const int nc = llama_tokenize(im.vocab, c.c_str(), (int) c.size(), ct, 8, false, false);
+            if (nc < 1) {
+                r.error = "choice '" + c + "' does not tokenize";
+                return r;
+            }
+            r.choice_logp.push_back((double) lg[ct[0]] - lse);
+        }
+    }
+    if (scored == 0 && req.choices.empty()) {
+        r.error = "nothing scored — text shorter than skip + 1";
+        return r;
+    }
+    r.nll = scored > 0 ? nll / scored : 0.0;
+    r.ppl = std::exp(r.nll);
+    r.n_scored = scored;
+    r.n_top1 = top1;
+    r.experts_routed = im.hook->experts_routed() - routed0;
+    r.experts_dropped = im.hook->experts_dropped() - dropped0;
+    r.experts_reranked = im.hook->experts_reranked() - reranked0;
+    r.experts_substituted = im.hook->experts_substituted() - substituted0;
+    r.seconds = secs(t0, clock_t_::now());
+    r.ok = true;
+    return r;
+}
+
 void Session::cancel() {
     impl_->cancel_requested.store(true, std::memory_order_relaxed);
 }
@@ -527,6 +731,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
     im.hook = std::make_unique<RouterHook>(recipe ? *recipe : MoeRecipe{}, n_layer_streamed);
     im.hook->set_prefetch_layers(cfg.moe.prefetch_layers);
     im.hook->set_drop_policy(cfg.moe.drop_cold_frac, cfg.moe.drop_renorm, cfg.moe.drop_prefill);
+    im.hook->set_expert_substitute(cfg.moe.substitute_lambda);
     im.hook->set_predict_log(cfg.moe.predict_log);
     im.hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
     im.hook->set_route_ahead(cfg.moe.route_ahead);
@@ -704,14 +909,20 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
         std::vector<uint64_t> dense_bytes;
         if (route_trace) dense_bytes = dense_bytes_per_layer(offs, layers, n_layer_streamed);
 
-        // Anonymous dense-weights mode: hand the streamer the dense (non-expert) model weights to
-        // read into anon buffers. The list is every captured weight leaf that IS a gguf tensor
-        // (dropping graph inputs and KV, which share the leaf shape) and is NOT one of the streamed
-        // experts. Built before init consumes `layers`. Only this mode needs them; the others ignore
-        // an empty list.
-        if (cfg.moe.dense_weights == DenseWeightsMode::Anonymous || cfg.moe.dense_weights == DenseWeightsMode::Pinned) {
+        // Hand the streamer the dense (non-expert) model weights: every captured weight leaf that IS
+        // a gguf tensor (dropping graph inputs and KV, which share the leaf shape) and is NOT one of
+        // the streamed experts. Built before init consumes `layers`. Anonymous/Pinned read these into
+        // their own buffers; every mode needs the list to hold back a tensor too large to be
+        // resident at all (qwen4exp's n-gram table), which must also leave the warm sweep and the
+        // residency sensor — see DenseWeights::hold_back_oversized.
+        {
             const std::unordered_set<std::string> expert_names = expert_tensor_names(layers);
-            std::vector<DenseTensorRef> dense;
+            // The subset the graph only row-gathers, when the run asked for the row policy. Their
+            // membership is the hook's verdict on what the graph did, and this is a filter over the
+            // dense list rather than a second list, so a table cannot be both resident and streamed.
+            const std::unordered_set<std::string> row_names =
+                cfg.moe.row_stream ? im.hook->row_gathered_weights() : std::unordered_set<std::string>();
+            std::vector<DenseTensorRef> dense, rows;
             for (const auto & kv : im.hook->captured_weights()) {
                 const std::string & name = kv.first;
                 if (expert_names.count(name)) continue;
@@ -724,13 +935,19 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
                 d.size = sz->second;
                 d.file_idx = offs.file_by_name.at(name);
                 dense.push_back(d);
+                if (row_names.count(name)) rows.push_back(d);
             }
+            const uint64_t row_budget = (uint64_t) std::max(0, cfg.moe.row_stream_mb) * 1024ull * 1024ull;
             im.source.set_dense_tensors(std::move(dense));
+            im.source.set_row_tensors(std::move(rows), row_budget);
         }
 
         if (!im.source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe))
             return fail("expert stream source init failed");
         im.hook->set_source(&im.source);
+        // The row policy exists only once dense_.init has taken the tables over; null means nothing
+        // qualified or the takeover declined, and the hook then costs exactly nothing per node.
+        im.hook->set_row_source(im.source.row_source());
 
         if (route_trace) {
             im.route_trace = route_trace;
@@ -783,7 +1000,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
         st.n_layer = im.n_layer;
         st.n_threads = cfg.n_threads;
         st.io_threads = cfg.moe.enabled ? cfg.moe.io_threads : 0;
-        st.o_direct = cfg.moe.enabled && cfg.moe.o_direct;
+        st.o_direct = cfg.moe.enabled && im.source.stats().o_direct; // the open's outcome, not the request
         st.overlap = cfg.moe.enabled && cfg.moe.overlap;
         if (compute_trace) {
             im.compute_trace = compute_trace;
@@ -829,7 +1046,6 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
         ri.force_cache = cfg.moe.force_cache;
         ri.load_all = cfg.moe.enabled && cfg.moe.load_all;
         ri.io_threads = cfg.moe.enabled ? cfg.moe.io_threads : 0;
-        ri.o_direct = cfg.moe.enabled && cfg.moe.o_direct;
         ri.overlap = cfg.moe.enabled && cfg.moe.overlap;
         ri.io_two_wave = cfg.moe.enabled && cfg.moe.io_two_wave;
         ri.prefetch_layers = cfg.moe.enabled ? cfg.moe.prefetch_layers : 0;
@@ -841,6 +1057,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
         ri.drop_cold_frac = cfg.moe.enabled ? cfg.moe.drop_cold_frac : 0.0f;
         ri.drop_renorm = cfg.moe.drop_renorm;
         ri.drop_prefill = cfg.moe.drop_prefill;
+        ri.substitute_lambda = cfg.moe.enabled ? cfg.moe.substitute_lambda : 0.0f;
         // The CSV keeps the two familiar flags, derived from the resolved dense-weights policy.
         ri.dense_weights = cfg.moe.dense_weights == DenseWeightsMode::Mmap        ? "mmap"
                            : cfg.moe.dense_weights == DenseWeightsMode::Anonymous ? "anon"
@@ -849,6 +1066,9 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
         if (cfg.moe.enabled) {
             const IExpertSource::Stats st = im.source.stats();
             ri.cache_mb = (int) (st.cache_budget_bytes / (1024ull * 1024ull));
+            // o_direct from the same sample: whether the shard readers actually got cache bypass
+            // (O_DIRECT honoured, or F_NOCACHE applied on Apple), never what the flag asked for.
+            ri.o_direct = st.o_direct;
         }
         // The EFFECTIVE top-k: an override IS the applied width, otherwise the model's own. Same
         // resolution the route trace does, and worth a header read — a run whose top-k is unknown
@@ -861,6 +1081,11 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
                 if (ri.n_expert_used <= 0) ri.n_expert_used = mi.n_expert_used;
             }
         }
+        // Last, because it needs both numbers above: the budget the streamer settled on and the
+        // width that was actually applied. Rounded UP — a cycle reported as smaller than it is
+        // would put a budget on the wrong side of the cliff in exactly the borderline case.
+        ri.cache_cycle_mb =
+            (int) ((im.source.worst_cycle_bytes(ri.n_expert_used) + 1024ull * 1024ull - 1) / (1024ull * 1024ull));
     }
 
     // The effective routing width, resolved once: an override IS the applied width, otherwise the
@@ -887,6 +1112,23 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
                          "routing here, against 12.5%% at the top-k 8 this was measured on. Expect it to discard "
                          "much more, and check output quality on your own task.\n",
                          (double) cfg.moe.drop_cold_frac, k, 100.0 * cfg.moe.drop_cold_frac / k);
+    }
+
+    // A cache budget below one token's worst-case cycle: say so once, at load.
+    //
+    // The number is computable from the model's shape alone, so this costs nothing and is available
+    // at the only moment it can still be acted on. It is a warning, not a rejection: the budget is
+    // legal, the run is byte-correct, and cache_min_mb already rejects the band it was drawn for.
+    // What this catches is the case that number cannot see — a budget comfortably above the fixed
+    // floor and still under THIS model's cycle, which --n-expert-used widens without touching the
+    // budget. Below the cycle no entry survives to the next token, so the run pays management and
+    // RAM for a cache that cannot hit. The engine states the fact; what to do about it is
+    // docs/cache-sizing.md's business, not a knob the engine should editorialize about.
+    if (im.info.cache_mb > 0 && im.info.cache_cycle_mb > 0 && im.info.cache_mb < im.info.cache_cycle_mb) {
+        std::fprintf(stderr,
+                     "bmoe: WARNING expert cache %d MiB is below this model's worst-case token cycle of %d MiB "
+                     "at top-k %d — no entry can survive to the next token, so expect a hit rate near zero.\n",
+                     im.info.cache_mb, im.info.cache_cycle_mb, im.info.n_expert_used);
     }
 
     im.load_seconds = secs(t_load0, clock_t_::now());
@@ -1303,6 +1545,11 @@ RunResult Session::generate(const GenerateRequest & req,
     };
 
     // ── prefill (chunked by n_batch; positions auto-continue from the reused prefix) ──
+    // Prefill attribution (#173): the cumulative counters are pinned before the prompt chunks so
+    // their deltas across prefill carry the same wall-additive terms the decode phase reports.
+    // The session layer already holds everything needed; the streamer is untouched.
+    PrefillTally prefill_tally;
+    prefill_tally.begin(moe.enabled, im.source);
     const auto t_prefill0 = clock_t_::now();
     // Two predicates, deliberately distinct. spec_on is "the verify loop runs" — a wide batch, an
     // accept pass, a rollback — and both sources need all of it. mtp_on is "the draft comes from the
@@ -1365,6 +1612,11 @@ RunResult Session::generate(const GenerateRequest & req,
         prompt_n_past = n_prompt;
     }
     const double prefill_seconds = secs(t_prefill0, clock_t_::now());
+    // Prefill attribution, closed here (the begin() snapshot sits above the chunk loop): deltas
+    // of the cumulative counters across the prompt, the quantities the decode phase reports per
+    // token. Read with the same rules: io is summed lane busy time under overlap, stall is the
+    // union of stalled intervals, cpu is whole-process (upper bound on compute-thread time).
+    prefill_tally.end(moe.enabled, im.source);
     const float * logits = llama_get_logits_ith(ctx, -1);
 
     // ── greedy generation ──
@@ -1373,15 +1625,16 @@ RunResult Session::generate(const GenerateRequest & req,
     int n_gen = 0;
     double gen_seconds = 0.0;
 
-    // Baseline snapshot taken AFTER prefill: the summary reports the generation phase only,
-    // from real per-token deltas (prefill routes near the whole bank, so folding it into a
-    // per-token average would badly inflate the flash-I/O figure). In a warm session these
-    // counters carry the prior prompts' totals; the deltas make each prompt self-relative.
+    // Baseline seeded from prefill's closing sample: the summary reports the generation phase
+    // only, from real per-token deltas (prefill routes near the whole bank, so folding it into a
+    // per-token average would badly inflate the flash-I/O figure). Nothing runs between the two
+    // phases, so end()'s snapshot IS the decode baseline — one reading of the counters at the
+    // boundary instead of two that could drift apart. In a warm session these counters carry the
+    // prior prompts' totals; the deltas make each prompt self-relative.
     GenTally tally;
     tally.overlap = moe.overlap;
-    tally.n_threads = im.cfg.n_threads;
     if (moe.enabled) {
-        const IExpertSource::Stats st0 = im.source.stats();
+        const IExpertSource::Stats & st0 = prefill_tally.post;
         tally.prev_bytes = (long long) st0.read_bytes;
         tally.prev_io_s = st0.read_seconds;
         tally.prev_mgmt_s = st0.mgmt_seconds;
@@ -1397,6 +1650,8 @@ RunResult Session::generate(const GenerateRequest & req,
     // for and the one the tok/s number is about.
     const long long prev_routed = im.hook->experts_routed();
     const long long prev_dropped = im.hook->experts_dropped();
+    const long long prev_reranked = im.hook->experts_reranked();
+    const long long prev_substituted = im.hook->experts_substituted();
     // Per-token cursors for the hook's own eval-thread meters (route-ahead issue + watchdog): the
     // hook accumulates for the session, the rows want this token's share.
     long long prev_ra_issue_ns = im.hook->route_ahead_issue_ns();
@@ -1683,6 +1938,7 @@ RunResult Session::generate(const GenerateRequest & req,
 
     // ── summary ──
     RunSummary & s = res.summary;
+    s.arch = im.arch;
     s.n_generated = n_gen;
     s.gen_seconds = gen_seconds;
     s.s_per_token = n_gen ? gen_seconds / n_gen : 0.0;
@@ -1695,6 +1951,11 @@ RunResult Session::generate(const GenerateRequest & req,
                          : chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen;
     s.load_seconds = im.load_seconds;
     s.prefill_seconds = prefill_seconds;
+    s.prefill_cpu_seconds = prefill_tally.cpu_seconds;
+    s.prefill_read_mib = prefill_tally.read_mib;
+    s.prefill_io_seconds = prefill_tally.io_seconds;
+    s.prefill_stall_seconds = prefill_tally.stall_seconds;
+    s.prefill_mgmt_seconds = prefill_tally.mgmt_seconds;
     s.majflt_per_token = n_gen ? (double) tally.majflt / n_gen : 0.0;
     s.cpu_s_per_token = n_gen ? tally.cpu_seconds / n_gen : 0.0;
     if (moe.enabled) {
@@ -1713,6 +1974,14 @@ RunResult Session::generate(const GenerateRequest & req,
         s.cache_resizes = st.cache_resizes;
         s.cache_evictions = st.evictions;
         s.cache_rereads = st.rereads;
+        const RowSourceStats rs = im.source.row_stats();
+        s.row_table_mib = rs.table_bytes / (1024.0 * 1024.0);
+        s.row_resident_mib = rs.resident_bytes / (1024.0 * 1024.0);
+        s.row_read_mib = rs.bytes_read / (1024.0 * 1024.0);
+        s.row_rows = (long long) rs.rows;
+        s.row_slab_reads = (long long) rs.slab_reads;
+        s.row_evictions = (long long) rs.evictions;
+        s.row_io_errors = (long long) rs.io_errors;
         s.moe_drain_s_per_token = n_gen ? tally.drain_seconds / n_gen : 0.0;
         s.moe_adopt_s_per_token = n_gen ? tally.adopt_seconds / n_gen : 0.0;
         s.token_demand_mib = st.token_demand_bytes / (1024.0 * 1024.0);
@@ -1723,6 +1992,8 @@ RunResult Session::generate(const GenerateRequest & req,
     }
     s.experts_routed = im.hook->experts_routed() - prev_routed;
     s.experts_dropped = im.hook->experts_dropped() - prev_dropped;
+    s.experts_reranked = im.hook->experts_reranked() - prev_reranked;
+    s.experts_substituted = im.hook->experts_substituted() - prev_substituted;
     // Per-turn deltas, like every other generation figure here: a warm session's counters are
     // cumulative, and an acceptance rate averaged over earlier prompts would describe none of them.
     s.mtp_drafted = im.mtp_drafted - mtp0_drafted;

@@ -30,8 +30,15 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -599,6 +606,8 @@ static int run_session_loop(const RunConfig & cfg,
                     "\"prefill_tps\":%.2f,\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"n_prompt\":%d,\"n_past\":%d,"
                     "\"compute_s_tok\":%.4f,\"io_s_tok\":%.4f,\"cache_resident_mib\":%.0f,\"cache_budget_mib\":%.0f,"
                     "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
+                    "\"prefill_cpu_s\":%.3f,\"prefill_read_mib\":%.1f,\"prefill_io_s\":%.3f,"
+                    "\"prefill_stall_s\":%.3f,\"prefill_mgmt_s\":%.3f,"
                     "\"token_demand_mib\":%.1f,\"mtp_drafted\":%lld,\"mtp_accepted\":%lld,\"mtp_decodes\":%lld,"
                     "\"mtp_draft_s_tok\":%.4f,\"drafted_steps\":%lld,\"loop_overhead_s_tok\":%.4f,"
                     "\"reasoning\":\"%s\",\"text\":\"%s\"}\n",
@@ -606,9 +615,11 @@ static int run_session_loop(const RunConfig & cfg,
                     (s.prefill_seconds > 0 ? s.n_prompt / s.prefill_seconds : 0.0), s.load_seconds, s.cache_hit_pct,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
                     s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
-                    s.majflt_per_token, s.cpu_s_per_token, s.token_demand_mib, s.mtp_drafted, s.mtp_accepted,
-                    s.mtp_decodes, s.mtp_draft_s_per_token, s.drafted_steps, s.loop_overhead_s_per_token,
-                    json_escape(r.reasoning_text).c_str(), json_escape(r.generated_text).c_str());
+                    s.majflt_per_token, s.cpu_s_per_token, s.prefill_cpu_seconds, s.prefill_read_mib,
+                    s.prefill_io_seconds, s.prefill_stall_seconds, s.prefill_mgmt_seconds, s.token_demand_mib,
+                    s.mtp_drafted, s.mtp_accepted, s.mtp_decodes, s.mtp_draft_s_per_token, s.drafted_steps,
+                    s.loop_overhead_s_per_token, json_escape(r.reasoning_text).c_str(),
+                    json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
 
@@ -616,6 +627,18 @@ static int run_session_loop(const RunConfig & cfg,
     // it has usually already returned). Detach so process exit is not held up by a blocking read.
     if (reader.joinable()) reader.detach();
     return rc;
+}
+
+// True when Explorer (a double click) created this console for us alone, so it will vanish the
+// instant we return and nothing we printed gets read. A terminal the user already had open also
+// holds the console and stays; the process count tells the two apart.
+static bool console_is_ours_alone() {
+#if defined(_WIN32)
+    DWORD pid;
+    return GetConsoleProcessList(&pid, 1) == 1;
+#else
+    return false;
+#endif
 }
 
 static void print_usage(const char * argv0) {
@@ -704,6 +727,7 @@ static void print_usage(const char * argv0) {
         "  MoE expert streaming:\n"
         "      --moe-stream        stream only the routed experts per token (MoE models)\n"
         "      --cache-mb N|auto   LRU expert cache budget in MiB (0=off, or >=%d); auto=size to device\n"
+        "                          (default: auto whenever --moe-stream is on)\n"
         "      --cache-floor-mb N  with --cache-mb auto: RAM to leave free (default 1536)\n"
         "      --cache-ceil-mb N   with --cache-mb auto: upper bound on the budget (0 = no cap)\n"
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
@@ -717,6 +741,13 @@ static void print_usage(const char * argv0) {
         "                          Android-only; measured +17.9%% on a long generation, off by default)\n"
         "                          [DEPRECATED] aliases kept for old scripts: --dense-odirect means\n"
         "                          `--dense-weights anon`, --no-warm-dense means `--dense-weights mmap`\n"
+        "      --row-stream        serve dense tables the graph only GATHERS ROWS from (a token\n"
+        "                          embedding) from flash instead of RAM: the tensor is bound to\n"
+        "                          reserved address space and only the rows a token needs are\n"
+        "                          read. Which tables qualify comes from the graph, not from a\n"
+        "                          name list, so a model that also multiplies by its embedding\n"
+        "                          table is left alone, on any architecture\n"
+        "      --row-stream-mb N   resident window for those tables in MiB (default 64)\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
@@ -731,6 +762,26 @@ static void print_usage(const char * argv0) {
         "                          F x (1/top-k) of the routing's weight. F in (0, 1]; 1.0 is the\n"
         "                          uniform share and the useful maximum. LOSSY and cache-dependent:\n"
         "                          it changes the output, and not reproducibly. Off by default.\n"
+        "      --expert-substitute L  EXPERIMENTAL, LOSSY: before committing a decode routing, raise\n"
+        "                          the score of every resident expert by L x this token's score range\n"
+        "                          and re-rank. A resident expert wins a slot only when it was within\n"
+        "                          that margin of the one it displaces; weights are the router's own.\n"
+        "                          Runs the same NUMBER of experts, fewer of which cost a read.\n"
+        "                          L in [0, 1]; 0 is off. Needs the LRU cache. Measured best: 0.15\n"
+        "      --ppl FILE          measure teacher-forced perplexity of FILE instead of generating.\n"
+        "                          Every cell scores the SAME fixed token sequence, so the number is\n"
+        "                          a scale: comparing GENERATED text cannot price a lossy setting,\n"
+        "                          because greedy output only moves when a perturbation happens to\n"
+        "                          cross an argmax boundary, whatever its size\n"
+        "      --ppl-skip N        leading tokens evaluated but not scored (default 8)\n"
+        "      --ppl-step          score one token per decode, so a cache-dependent policy (dropping,\n"
+        "                          substitution) is priced in the regime where it acts. A wide batch\n"
+        "                          routes a layer before reading any of it, and finds almost nothing\n"
+        "                          resident. Slower: one decode per token\n"
+        "      --ppl-list FILE     score every text named in FILE (one path per line) in one session,\n"
+        "                          so a benchmark of many short texts loads the model once\n"
+        "      --ppl-choices A,B   after the text, report the log-probability of each choice's first\n"
+        "                          token: the multiple-choice comparison, one pass per question\n"
         "      --drop-no-renorm    do not rescale the surviving weights after a drop (A/B)\n"
         "      --drop-in-prefill   drop during prefill too (off: the cold cache makes it expensive)\n"
         "      --route-ahead N     EXPERIMENTAL, LOSSY: commit decode routing to the prediction made\n"
@@ -821,6 +872,11 @@ int main(int argc, char ** argv) {
     RunConfig cfg;
     std::string csv_path;
     std::string route_trace_path;
+    std::string ppl_path;
+    int ppl_skip = 8;
+    bool ppl_step = false;
+    std::string ppl_list;                 // --ppl-list: one text path per line, scored in one session
+    std::vector<std::string> ppl_choices; // --ppl-choices: strings whose first-token log-prob is reported
     std::string compute_trace_path;
     std::string io_trace_path;
     bool session_mode = false;
@@ -988,6 +1044,10 @@ int main(int argc, char ** argv) {
             cfg.moe.io_threads = std::atoi(next("--io-threads"));
         else if (a == "--no-odirect")
             cfg.moe.o_direct = false;
+        else if (a == "--row-stream")
+            cfg.moe.row_stream = true;
+        else if (a == "--row-stream-mb")
+            cfg.moe.row_stream_mb = std::atoi(next("--row-stream-mb"));
         else if (a == "--dense-weights") {
             const std::string m = next("--dense-weights");
             if (m == "mmap")
@@ -1023,7 +1083,26 @@ int main(int argc, char ** argv) {
             cfg.moe.prefetch_sync = true;
         else if (a == "--drop-cold-experts")
             cfg.moe.drop_cold_frac = (float) std::atof(next("--drop-cold-experts"));
-        else if (a == "--drop-no-renorm")
+        else if (a == "--expert-substitute")
+            cfg.moe.substitute_lambda = (float) std::atof(next("--expert-substitute"));
+        else if (a == "--ppl")
+            ppl_path = next("--ppl");
+        else if (a == "--ppl-skip")
+            ppl_skip = std::atoi(next("--ppl-skip"));
+        else if (a == "--ppl-step")
+            ppl_step = true;
+        else if (a == "--ppl-list")
+            ppl_list = next("--ppl-list");
+        else if (a == "--ppl-choices") {
+            std::string cs = next("--ppl-choices");
+            size_t start = 0;
+            while (start <= cs.size()) {
+                const size_t comma = cs.find(',', start);
+                ppl_choices.push_back(cs.substr(start, comma == std::string::npos ? std::string::npos : comma - start));
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
+        } else if (a == "--drop-no-renorm")
             cfg.moe.drop_renorm = false;
         else if (a == "--drop-in-prefill")
             cfg.moe.drop_prefill = true;
@@ -1086,8 +1165,22 @@ int main(int argc, char ** argv) {
     if (!seen.count("--predict-log")) cfg.moe.predict_log = env_int("BMOE_PREDICT_LOG", 0) != 0;
     if (!seen.count("--predict-prefetch")) cfg.moe.predict_prefetch = env_int("BMOE_PREDICT_PREFETCH", 0) != 0;
 
+    // A default the CLI resolves rather than the library, so an embedder's explicit 0 keeps meaning
+    // "no cache". With streaming on, a budget of 0 re-reads every routed expert from flash every
+    // token, which is never what someone who just typed --moe-stream wanted (#186). An explicit
+    // --cache-mb or BMOE_CACHE_MB still wins, including an explicit 0.
+    if (cfg.moe.enabled && !cfg.moe.cache_auto && !seen.count("--cache-mb") && std::getenv("BMOE_CACHE_MB") == nullptr)
+        cfg.moe.cache_auto = true;
+
     if (cfg.model_path.empty()) {
         print_usage(argv[0]);
+        // Double-clicked: without this the window closes before the usage can be read, and the
+        // program looks like it failed to start.
+        if (console_is_ours_alone()) {
+            std::fprintf(stderr, "\nbmoe-cli is a command-line program: run it from a terminal with -m <model.gguf>.\n"
+                                 "Press Enter to close this window.\n");
+            std::getchar();
+        }
         return 1;
     }
     if (session_mode && !cfg.media_paths.empty()) {
@@ -1143,6 +1236,70 @@ int main(int argc, char ** argv) {
     // model loaded and the expert cache warm between them. Prompts arrive as JSON requests, not
     // via -p. This is a superset of --progress output (BMOE_* lines), so it never streams inline.
     if (session_mode) return run_session_loop(cfg, sink.get(), route_trace.get(), compute_trace.get(), io_trace.get());
+
+    // Perplexity mode: score a fixed text instead of generating one. It opens the same session
+    // with the same flags, so a lossy setting is priced under exactly the configuration it ships
+    // with — and every cell scores the same tokens, which is the whole point.
+    if (!ppl_path.empty() || !ppl_list.empty()) {
+        std::vector<std::string> paths;
+        if (!ppl_path.empty()) paths.push_back(ppl_path);
+        if (!ppl_list.empty()) {
+            std::ifstream lf(ppl_list);
+            if (!lf) {
+                std::fprintf(stderr, "bmoe: cannot open --ppl-list file '%s'\n", ppl_list.c_str());
+                return 2;
+            }
+            std::string line;
+            while (std::getline(lf, line)) {
+                while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+                    line.pop_back();
+                if (!line.empty() && line[0] != '#') paths.push_back(line);
+            }
+        }
+        std::string error;
+        const SessionConfig sc = session_config_from(cfg);
+        std::unique_ptr<Session> session =
+            Session::open(sc, error, route_trace.get(), compute_trace.get(), io_trace.get());
+        if (!session) {
+            std::fprintf(stderr, "bmoe: %s\n", error.c_str());
+            return 1;
+        }
+        for (const std::string & path : paths) {
+            std::ifstream tf(path, std::ios::binary);
+            if (!tf) {
+                std::fprintf(stderr, "bmoe: cannot open --ppl file '%s'\n", path.c_str());
+                return 2;
+            }
+            std::ostringstream ts;
+            ts << tf.rdbuf();
+            PplRequest pr;
+            pr.text = ts.str();
+            pr.skip = ppl_skip;
+            pr.step = ppl_step;
+            pr.choices = ppl_choices;
+            const PplResult pres = session->perplexity(pr);
+            if (!pres.ok) {
+                std::fprintf(stderr, "bmoe: perplexity failed on '%s': %s\n", path.c_str(), pres.error.c_str());
+                return 1;
+            }
+            if (paths.size() > 1) std::printf("ppl-file: %s\n", path.c_str());
+            std::printf("ppl: %.4f  nll: %.5f  next-token hits: %d/%d (%.1f%%)  %.2f s\n", pres.ppl, pres.nll,
+                        pres.n_top1, pres.n_scored, pres.n_scored > 0 ? 100.0 * pres.n_top1 / pres.n_scored : 0.0,
+                        pres.seconds);
+            if (!pres.choice_logp.empty()) {
+                std::printf("ppl-choices:");
+                for (size_t k = 0; k < pres.choice_logp.size(); ++k)
+                    std::printf(" %s=%.4f", ppl_choices[k].c_str(), pres.choice_logp[k]);
+                std::printf("\n");
+            }
+            // Say what the policy did, always. A lossy flag that touched nothing scored the
+            // baseline, and a table of identical perplexities is the least obvious way to be told so.
+            std::printf("ppl-policy: %lld/%lld routed experts dropped, %lld/%lld reranked slots substituted\n",
+                        pres.experts_dropped, pres.experts_routed, pres.experts_substituted, pres.experts_reranked);
+            std::fflush(stdout);
+        }
+        return 0;
+    }
 
     if (!cfg.progress) {
         std::printf("%s", cfg.prompt.c_str());
@@ -1221,6 +1378,35 @@ int main(int argc, char ** argv) {
         std::printf("prefill: %d tokens, %.3f s (%.1f tok/s) | model load %.3f s | TTFT %.3f s\n", s.n_prompt,
                     s.prefill_seconds, prefill_tps, s.load_seconds, s.load_seconds + s.prefill_seconds);
     }
+    // What this run actually was. Printed unconditionally, because its absence was the defect: with
+    // streaming off the engine is plain llama.cpp on mmap, every line below is silent, and a report
+    // that only ever describes streaming let a baseline run read as a measurement of this project
+    // (#186). Naming the flag here is cheaper than a doc nobody reaches from a terminal.
+    {
+        const char * dense = cfg.moe.dense_weights == DenseWeightsMode::Mmap     ? "mmap"
+                             : cfg.moe.dense_weights == DenseWeightsMode::Warmed ? "warm"
+                             : cfg.moe.dense_weights == DenseWeightsMode::Pinned ? "ahwb"
+                                                                                 : "anon";
+        if (cfg.moe.enabled) {
+            char cache[64];
+            if (cfg.moe.cache_auto)
+                std::snprintf(cache, sizeof(cache), "cache auto");
+            else if (cfg.moe.cache_mb > 0)
+                std::snprintf(cache, sizeof(cache), "cache %d MiB", cfg.moe.cache_mb);
+            else
+                std::snprintf(cache, sizeof(cache), "cache off");
+            std::printf("mode: expert streaming, %s, dense %s%s\n", cache, dense, cfg.moe.overlap ? ", overlap" : "");
+        } else if (!s.arch.empty() && find_moe_recipe(s.arch.c_str())) {
+            std::printf("mode: mmap. Expert streaming is OFF on a MoE model (%s), so this run is a "
+                        "baseline, not this engine: add --moe-stream --overlap to stream the routed "
+                        "experts from flash.\n",
+                        s.arch.c_str());
+        } else {
+            std::printf("mode: mmap (%s is not a MoE architecture this build streams; --list-archs "
+                        "lists the supported ones)\n",
+                        s.arch.empty() ? "the model" : s.arch.c_str());
+        }
+    }
     if (cfg.moe.enabled) {
         std::printf("moe-stream: read %.1f MiB (%.2f MiB/token), decode %.3f s/token "
                     "(compute %.3f + cache mgmt %.3f + flash I/O %.3f s/token, %.0f MiB/s)\n",
@@ -1243,6 +1429,16 @@ int main(int argc, char ** argv) {
                             "already paid for once\n",
                             s.cache_evictions, s.cache_rereads,
                             s.n_generated ? (double) s.cache_rereads / s.n_generated : 0.0);
+        }
+        // The row policy's own line: what it took out of RAM, what it holds instead, and what
+        // that cost in reads. Printed only when a table qualified, so a run that discovered
+        // none says nothing rather than printing a row of zeroes.
+        if (s.row_table_mib > 0.0) {
+            std::printf("moe-rows: %.0f MiB of row-gathered table(s) off the resident set, %.1f MiB resident, "
+                        "%lld rows gathered, %lld reads (%.1f MiB)\n",
+                        s.row_table_mib, s.row_resident_mib, s.row_rows, s.row_slab_reads, s.row_read_mib);
+            if (s.row_io_errors > 0)
+                std::printf("moe-rows: %lld FAILED reads — this run's output is not trustworthy\n", s.row_io_errors);
         }
         if (cfg.moe.overlap)
             std::printf("moe-overlap: stall %.3f s/token (flash reads overlapped with FFN compute)\n",
@@ -1268,6 +1464,12 @@ int main(int argc, char ** argv) {
                         s.experts_dropped, s.experts_routed,
                         s.experts_routed > 0 ? 100.0 * s.experts_dropped / s.experts_routed : 0.0,
                         (double) cfg.moe.drop_cold_frac);
+        if (cfg.moe.substitute_lambda > 0.0f)
+            std::printf("moe-substitute: %lld/%lld reranked slots went to a resident expert (%.1f%%), margin %.2f x "
+                        "score range\n",
+                        s.experts_substituted, s.experts_reranked,
+                        s.experts_reranked > 0 ? 100.0 * s.experts_substituted / s.experts_reranked : 0.0,
+                        (double) cfg.moe.substitute_lambda);
         // The agreement is the honest label for what the run just generated under: 100% minus it
         // is the fraction of routed slots that went to an expert the router did not choose.
         if (cfg.moe.route_ahead > 0) {
