@@ -5,6 +5,10 @@
   </picture>
 </p>
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/85652?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-85652" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/85652/daily?language=C%2B%2B" alt="Helldez%2FBigMoeOnEdge | Trendshift" width="250" height="55"/></a>
+</p>
+
 <p align="center"><b>Forked from Helldez/BigMoeOnEdge. Run Mixture-of-Experts models bigger than your device's RAM. On a phone, on a PC, CPU only.</b></p>
 
 <p align="center">
@@ -27,16 +31,27 @@ tokenizer and chat template llama.cpp supports works out of the box, because lla
 doing that part: MXFP4 and Q4_K_M stream through the same code. Supporting a new MoE architecture
 is one row in a registry, and following a new llama.cpp release is a routine submodule bump.
 
-The most extreme thing it can do today: **DeepSeek V4 Flash 0731**, a 284B-parameter MoE
-(~91 GB on disk at 2-bit expert quantization), generating on a phone with 12 GB of RAM at about
-**1 tok/s**. More than seven times more model than memory, streamed from flash as the three shard
-files Hugging Face ships, with no merge step and no PC in the loop.
+**DeepSeek V4 Flash 0731** is the largest model run this way so far. It generates on a phone with
+12 GB of RAM, streamed from flash as the three shard files Hugging Face ships, with no merge step
+and no PC in the loop.
 
 <p align="center"><img src="docs/assets/hero-dsv4.gif" width="360" alt="DeepSeek V4 Flash 0731 (284B, ~91 GB) generating in the demo app on a 12 GB phone, with live tok/s and telemetry"></p>
 <p align="center"><em>DeepSeek V4 Flash 0731: 284B parameters, ~91 GB on disk, on a 12 GB phone.
 0.94 tok/s in the demo app, real time.</em></p>
 
-It is not one model, either. Below: three of them, one after another on the same phone, each past
+**Qwen3.8-Flash-Next**, the Qwen4 architecture preview, ran on the same phone the day the weights
+appeared, before upstream support for it existed, because adding an architecture here is a
+registry row and not a change to the streaming path. A large part of that model is a lookup table,
+and the engine never loads it: it leaves the table on storage and reads only the sixteen entries
+each word actually needs. That is the direction architectures are moving in, and it is the
+direction this engine was built for: the more of a model that is there to be consulted rather than
+held, the less it matters that it does not fit.
+
+<p align="center"><img src="docs/assets/hero-qwen38.gif" width="360" alt="Qwen3.8-Flash-Next (125B, ~80 GB) generating in the demo app on a 12 GB phone, with live tok/s and telemetry"></p>
+<p align="center"><em>Qwen3.8-Flash-Next: 125B parameters, ~80 GB on disk (Q2_K), on a 12 GB phone.
+3.48 tok/s in the demo app, real time.</em></p>
+
+It is not one model, either. Below: three more, one after another on the same phone, each past
 what it should be able to hold.
 
 https://github.com/user-attachments/assets/f899b93f-c7c4-4ce9-9fb0-5ed1bae13761
@@ -96,10 +111,10 @@ shortcut: the downloader takes any direct gguf URL, so any model from the
 finishes, pick the model and chat. The telemetry panel shows tok/s and the compute-vs-flash
 split live, and every streaming knob below is in Settings.
 
-Models above Hugging Face's 50 GB per-file limit (gpt-oss-120b, DeepSeek V4 Flash 0731) ship as
-multi-shard ggufs, and both are in the catalog: the app fetches the shards one after another,
-resumable, under a single progress bar. The engine reads a split set natively, so there is no merge
-step anywhere. Outside the catalog the rule is the same: put the shards in one directory and point
+Models above Hugging Face's 50 GB per-file limit (gpt-oss-120b, DeepSeek V4 Flash 0731,
+Qwen3.8-Flash-Next) ship as multi-shard ggufs, and all three are in the catalog: the app fetches
+the shards one after another, resumable, under a single progress bar. The engine reads a split set
+natively, so there is no merge step anywhere. Outside the catalog the rule is the same: put the shards in one directory and point
 at the first (`-00001-of-...`).
 
 ## Features
@@ -129,6 +144,7 @@ flash, at the moment they are needed. Everything below tunes that.
 | Setting | Flag and values | What it does |
 |---|---|---|
 | Drop cold experts | `--drop-cold-experts` &nbsp;`0` (off) to `1.0`; app rungs `50%`, `75%`, `100%` &nbsp;(app default `75%`) | Skips a routed expert only when it is a cache miss *and* the router wanted it less than that share of an even split. Quality is spent only where it buys a read. Lossy and not reproducible: what is skipped depends on what the cache held. |
+| Prefer cached experts *(experimental)* | `--expert-substitute` &nbsp;`0` (off) to `1.0`; app rungs `10%` to `30%` &nbsp;(default off) | Nudges each routing toward experts already in the cache: a resident expert takes a slot only when the router scored it within that margin of the one it displaces. Same number of experts, fewer reads. Lossy and cache-dependent, like dropping ([detail](docs/cache-aware-substitution.md)). |
 | Active experts | `--n-expert-used` &nbsp;`0` (model's own), `6`, `4`, `3`, `2` | Consults fewer experts per token than the model asks for, cutting compute and reads together. Lossy, but reproducible: the same prompt gives the same answer. |
 | Guess ahead *(experimental)* | `--mtp` or `--ngram`, with `--draft` &nbsp;`1` to `5` &nbsp;and, for the head, `--mtp-p-min` &nbsp;`0`, `40%`, `60%`, `80%` | Drafts the next few tokens and verifies the group in one decode, keeping only what the model itself would have produced. Nothing is approximated. Wins when weights move once per group, loses when the wider verify widens each layer's read set ([mtp](docs/mtp.md), [ngram](docs/ngram.md)). |
 | Route-ahead *(experimental)* | `--route-ahead` &nbsp;`0` (off), `1`, `2`, `4` layers | Commits a layer's routing that many layers early, so its reads start early and can never be wasted. Lossy: some slots route differently. Excludes both prefetchers and Guess ahead ([detail](docs/route-ahead.md)). |
@@ -142,11 +158,14 @@ They are not interchangeable. Reducing the active experts cuts the routing tail 
 those experts were already free to run from memory, and it does so identically every time. Dropping
 cold experts spends quality only where it buys back a flash read, which is more surgical but makes
 the answer depend on what the cache happened to hold, so the same prompt can come out differently.
+Preferring cached experts is dropping's upstream sibling: instead of deciding whether to pay for a
+missing expert it decides whether to need one, and it keeps the routing's width.
 Guessing ahead gives up nothing at all: it changes how many tokens a pass confirms, not what the
 model computes.
 
 Each one is measured rather than assumed, and the numbers live with the method that produced them:
-[expert-dropping.md](docs/expert-dropping.md), [mtp.md](docs/mtp.md),
+[expert-dropping.md](docs/expert-dropping.md),
+[cache-aware-substitution.md](docs/cache-aware-substitution.md), [mtp.md](docs/mtp.md),
 [ngram.md](docs/ngram.md), [route-ahead.md](docs/route-ahead.md). Judge any of them on your own
 task before relying on it.
 
@@ -190,6 +209,7 @@ Defaults are the measured winning recipe for a model near RAM.
 | `lfm2moe` | Liquid AI LFM2 / LFM2.5 MoE (e.g. 8B-A1B) | Hybrid conv/attention stack with leading dense blocks; those stay resident |
 | `deepseek4` | DeepSeek V4 Flash (284B-A13B), validated on the 0731 release | V3.2-style routing (256 experts + shared); compressed attention is dense-side; ships multi-shard |
 | `bailingmoe3` | Ling 3.0 (e.g. Ling-3.0-flash, 127B-A5B) | 512 routed experts + shared, biased top-k; hybrid KDA/MLA attention is dense-side |
+| `qwen4exp` | Qwen3.8-Flash-Next (125B-A6B), the Qwen4 architecture preview | 512 routed experts + shared; a 51B n-gram embedding table stays mmap'd (see limitations). Runs on the 12 GB test phone with pinned dense weights: ~2 tok/s at UD-IQ3_XXS, 3.5 tok/s at the Q2_K build; upstream support merged in `b10666` |
 
 Adding an architecture is one row in the registry; expert counts and layouts are discovered from
 the model file at runtime, so nothing about a specific model is hardcoded in the streaming path.
@@ -352,6 +372,21 @@ Anything not measured is named as unmeasured. That is the rule the roadmap's
 [recorded negative results](docs/roadmap.md) exist to enforce: a simulation that predicted a win and
 a device that then delivered a 30% loss is why nothing here is published on an argument alone.
 
+### Measure it on your hardware
+
+Every row above comes from one phone and one laptop. NVMe mini PCs, ARM boards with a PCIe slot,
+other phones and unified-memory desktops are the machines we have not measured, and on Linux or
+macOS one command runs the fixed protocol on any supported MoE, in any quant, and prints the
+tables to paste into a
+[benchmark report](https://github.com/Helldez/BigMoeOnEdge/issues/new?template=benchmark-report.yml):
+
+```bash
+scripts/bench-report.sh /path/to/any-moe-model.gguf
+```
+
+Accepted rows land in [docs/community-benchmarks.md](docs/community-benchmarks.md) with your name,
+next to the stall, cache-hit and flash-per-token columns that make a tok/s figure comparable.
+
 ## Quickstart
 
 ### Host (Linux, macOS, Windows)
@@ -492,11 +527,13 @@ the full chat transcript, thinking/effort, template kwargs, sampling, and token 
 V cache requires Flash Attention. See [session.md](docs/session.md) and
 [telemetry.md](docs/telemetry.md) for the persistent-process contracts.
 
-Platform status: Linux is exercised by CI (build + gates) and Windows is where the
+Platform status: Linux is exercised by CI (build + gates), and Windows and macOS are
+compile-checked there on every pull request and release tag. Windows is where the
 [desktop numbers](#desktop) were measured. On Windows, build with CMake directly (Visual Studio
 Build Tools); the script above is bash, and MSVC puts the binary in `build\cli\Release\bmoe-cli.exe`.
-macOS builds from the same sources (the platform branches exist) but is not validated, and it has
-no O_DIRECT, so direct reads fall back to buffered I/O there.
+macOS builds from the same sources and has no O_DIRECT; a direct request is served with `F_NOCACHE`
+instead (uncached, but not alignment-constrained), and `o_direct` in the telemetry reports what the
+open actually achieved.
 
 ### Android
 
@@ -555,6 +592,8 @@ or reproduce the measurements. Most-wanted entry points:
 - [docs/adding-a-model.md](docs/adding-a-model.md): supporting a new MoE architecture.
 - [docs/benchmarks.md](docs/benchmarks.md): measured results and
   [how they were produced](docs/benchmark-method.md).
+- [docs/community-benchmarks.md](docs/community-benchmarks.md): results on hardware we do not own,
+  and how to add yours.
 - [docs/telemetry.md](docs/telemetry.md): the per-token line protocol, the CSV schema and the traces.
 - [docs/android-memory.md](docs/android-memory.md): what reclaims the engine's memory on a phone.
 
@@ -566,6 +605,9 @@ and EdgeMoE, not a novel technique. The closest recent work is
 397B MoE from SSD on Apple Silicon, and on an iPhone through a community fork. BigMoeOnEdge takes
 the other side of that problem: CPU-only, on Android, on llama.cpp's public API (bar one optional
 ~25-line hook, above), across architectures. See [docs/limitations.md](docs/limitations.md).
+The cache-aware routing under *Prefer cached experts* is the cache-conditional rerouting of
+Skliar et al. ([arXiv:2412.00099](https://arxiv.org/abs/2412.00099)), applied to a RAM cache in
+front of flash.
 
 ## License
 

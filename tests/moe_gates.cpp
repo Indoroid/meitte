@@ -47,6 +47,16 @@
 //       abstains, so every step takes the plain path and the output must be identical
 //   G14 --route-ahead, in two halves: a horizon past every layer overrides nothing and must be
 //       identical, and a horizon of one must commit real routings and still generate
+////   G15 --row-stream, the dense tables the graph only gathers rows from: a) served from flash
+//       inside the default window and b) inside a window of one slab, so nearly every gather
+//       evicts what the last one fetched. Both must be byte-identical to the resident reference.
+//
+// G15 needs no separate "did it do anything" check of the G10 kind: the tensor is bound to
+// RESERVED address space, so a row the policy fails to fetch is not a slightly wrong weight but
+// memory that was never written, and the output diverges on the first token. Identity is proof
+// that every gathered row was fetched. What it cannot prove is that a table qualified at all —
+// on a tiny model with tied embeddings none would, and the gate would pass vacuously. That is
+// what the run's own "moe-rows:" line reports, on the real model.
 //
 // Gate numbers are allocated once and never reused: a failing label has to name one thing. G11 and
 // G12 are reserved for the zero-copy branch (PR #143) and must not be taken here.
@@ -205,6 +215,20 @@ int main(int argc, char ** argv) {
     RunConfig dense_od_buf = dense_od;
     dense_od_buf.moe.o_direct = false;
 
+    // Row-gathered dense tables served from flash instead of RAM. The table is bound to reserved
+    // address space, so a row the policy failed to fetch is not a slightly wrong weight — it is
+    // unwritten memory, and the output diverges immediately. That makes byte-identity the whole
+    // test: G15a covers the ordinary path, G15b the eviction path, with a window of one slab so that
+    // almost every gather has to re-read what the previous one just handed back.
+    RunConfig rows = base(model);
+    rows.moe.enabled = true;
+    rows.moe.cache_mb = 0;
+    rows.moe.io_threads = 4;
+    rows.moe.row_stream = true;
+
+    RunConfig rows_tight = rows;
+    rows_tight.moe.row_stream_mb = 0; // clamped to a single slab: maximum eviction pressure
+
     std::string s_res, s_s0, s_sc, s_all, s_dod, s_dodb, err;
     if (!gen(resident, s_res, err)) {
         std::fprintf(stderr, "resident run failed: %s\n", err.c_str());
@@ -230,6 +254,15 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "dense-odirect(no O_DIRECT) run failed: %s\n", err.c_str());
         return 2;
     }
+    std::string s_rows, s_rows_tight;
+    if (!gen(rows, s_rows, err)) {
+        std::fprintf(stderr, "row-stream run failed: %s\n", err.c_str());
+        return 2;
+    }
+    if (!gen(rows_tight, s_rows_tight, err)) {
+        std::fprintf(stderr, "row-stream(one-slab window) run failed: %s\n", err.c_str());
+        return 2;
+    }
 
     int fails = 0;
     fails += check("G1 resident == streaming(cache off)", s_res, s_s0);
@@ -241,6 +274,8 @@ int main(int argc, char ** argv) {
     fails += check("G6 dense-odirect(rebind) == resident", s_res, s_dod);
     // G7: the rebind is byte-identical whether or not the dense read bypassed the page cache.
     fails += check("G7 dense=anon + expert O_DIRECT off == resident", s_res, s_dodb);
+    fails += check("G15a row-stream(row-gathered tables from flash) == resident", s_res, s_rows);
+    fails += check("G15b row-stream(one-slab window, evicting) == resident", s_res, s_rows_tight);
 
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
     // overlap, cache off
@@ -463,6 +498,56 @@ int main(int argc, char ** argv) {
         return 2;
     }
     fails += check("G8c drop(full strength, top-k=1) == top-k=1 undropped (top expert pinned)", s_k1, s_k1_drop);
+
+    // G8d — cache-aware substitution with a margin too small to move any routing must be
+    // byte-identical to the same cached run, and must have examined routings while changing none.
+    // Like G8a it runs against the small forced budget, so residency is a real mix of hits and
+    // misses and the re-ranking has something to prefer — it just may not prefer it at this margin.
+    RunConfig sub_inert = base(model);
+    sub_inert.moe.enabled = true;
+    sub_inert.moe.cache_mb = 2;
+    sub_inert.moe.force_cache = true;
+    sub_inert.moe.io_threads = 4;
+    sub_inert.moe.substitute_lambda = 1e-6f;
+    std::string s_sub_inert;
+    if (!gen(sub_inert, s_sub_inert, err)) {
+        std::fprintf(stderr, "substitute(inert margin) run failed: %s\n", err.c_str());
+        return 2;
+    }
+    fails += check("G8d substitute(margin below any gap) == streaming(cached, unsubstituted)", s_sc, s_sub_inert);
+    {
+        RunResult r = run(sub_inert);
+        if (!r || r.summary.experts_substituted != 0 || r.summary.experts_reranked <= 0) {
+            std::printf("[FAIL] G8d' inert margin must examine routings and substitute none (reranked=%lld "
+                        "substituted=%lld)\n",
+                        r.summary.experts_reranked, r.summary.experts_substituted);
+            ++fails;
+        } else {
+            std::printf("[PASS] G8d' inert margin examined %lld slots, substituted none\n", r.summary.experts_reranked);
+        }
+    }
+
+    // G8e — at the full margin a resident expert outranks every non-resident one, so against a
+    // cache that holds some of the layer the re-ranking MUST fire. There is no reference output (it
+    // is lossy by design); the gate is that generation completes and that the policy demonstrably
+    // acted: a count of zero here would mean the flag is inert, which is the failure mode that a
+    // lossy knob with a plausible-looking output can hide indefinitely.
+    RunConfig sub_full = sub_inert;
+    sub_full.moe.substitute_lambda = 1.0f;
+    {
+        RunResult r = run(sub_full);
+        if (!r || r.summary.experts_substituted <= 0 || r.generated_text.empty()) {
+            std::printf("[FAIL] G8e substitute(full margin) must generate and substitute (reranked=%lld "
+                        "substituted=%lld, %zu bytes)\n",
+                        r ? r.summary.experts_reranked : 0LL, r ? r.summary.experts_substituted : 0LL,
+                        r ? r.generated_text.size() : (size_t) 0);
+            ++fails;
+        } else {
+            std::printf("[PASS] G8e substitute(full margin) generated, %lld/%lld reranked slots went to a resident "
+                        "expert\n",
+                        r.summary.experts_substituted, r.summary.experts_reranked);
+        }
+    }
 
     // G9 — the expert-prediction probe observes and nothing more.
     //

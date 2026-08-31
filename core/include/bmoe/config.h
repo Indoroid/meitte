@@ -127,6 +127,23 @@ struct MoeStreamConfig {
     //             and the policy the Android app ships by default — the CLI matches it here.
     DenseWeightsMode dense_weights = DenseWeightsMode::Anonymous;
 
+    // ── row-gathered dense tables served from flash (see bmoe/row_source.h) ──────────
+    // A dense weight the graph only ever GATHERS ROWS from — a token embedding table is the pure
+    // case — is resident for nothing: one row of it is read per decoded token and the rest of the
+    // hundreds of MiB sits in RAM the expert cache is competing for. With this on, such a table is
+    // bound to reserved address space and only the rows the graph asks for are pulled from flash,
+    // inside a bounded window.
+    //
+    // WHICH tables qualify is decided by the graph at capture time and by nothing else: every
+    // reference to the tensor must be a row gather with a readable index. No architecture, tensor
+    // name or size threshold appears in the rule, so a model whose embeddings are also used as the
+    // output head simply never qualifies, on any architecture, without a special case for it.
+    //
+    // Off by default: it trades residency for a read per gather miss, and which way that trade goes
+    // is a measurement per device class, not a foregone conclusion.
+    bool row_stream = false;
+    int row_stream_mb = 64; // resident window across all row-streamed tables, in MiB
+
     // ── cache-aware expert dropping (lossy; opt-in) ──────────────────────────────────
     // Skip a routed expert when it is a cache MISS *and* the router weighted it below
     // drop_cold_frac × (1 / n_expert_used) — i.e. below that fraction of the uniform share a
@@ -155,6 +172,24 @@ struct MoeStreamConfig {
     // mass it does in decode (measured; see docs/expert-dropping.md). Prefill is also
     // compute-bound, so there is little to win.
     bool drop_prefill = false;
+
+    // ── cache-aware substitution (lossy; opt-in) ─────────────────────────────────────
+    // Dropping decides whether to PAY for a missing expert. This decides whether to NEED one:
+    // before a routing is committed, every expert's router score is raised by
+    // substitute_lambda × (this token's score range) if that expert is already resident, and the
+    // top-k is taken again. A resident expert therefore wins a slot only when it was within that
+    // margin of the one it displaces — a confident routing is untouched, a near-tie resolves
+    // toward RAM.
+    //
+    // The margin is a fraction of the RANGE, so one value means the same thing whatever scale a
+    // model's router scores live on: no per-model constant, and no calibration state. The weights
+    // are not touched: the graph applies whatever the router itself gives the selected experts.
+    //
+    // It runs the same NUMBER of experts, just cheaper ones. It is still lossy — they are not the
+    // experts the router asked for — and, like dropping, state-dependent. 0 (the default) disables
+    // it and the engine is bit-exact as before. Decode only; needs a live cache to report
+    // residency. See docs/cache-aware-substitution.md.
+    float substitute_lambda = 0.0f;
 
     // Diagnostics: measure how predictable the routing is, without acting on it. For every decoded
     // token the engine ranks each layer's experts a layer early — running the NEXT layer's gate

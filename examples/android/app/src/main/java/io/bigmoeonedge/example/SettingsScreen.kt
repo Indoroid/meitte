@@ -117,6 +117,16 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 ) { onChange(current.copy(denseWeights = DenseWeights.values()[it])) }
                 Hint(current.denseWeights.blurb)
 
+                SwitchRow(
+                    "Stream row-gathered tables",
+                    "A dense table the model only reads a few ROWS from per token (the token " +
+                        "embedding) does not need to be in RAM: only the rows are read, from flash. " +
+                        "Lossless - the output is identical. Which tables qualify is read off the " +
+                        "graph at load, so on a model where none do this does nothing.",
+                    current.rowStream,
+                    enabled = stream,
+                ) { onChange(current.copy(rowStream = it)) }
+
                 ExperimentalGroup {
                     IntSetting(
                         "Temporal prefetch (layers)", AppSettings.PREFETCH_CHOICES, current.prefetchLayers,
@@ -192,6 +202,28 @@ fun SettingsScreen(current: AppSettings, onChange: (AppSettings) -> Unit, onBack
                 )
 
                 ExperimentalGroup {
+                    // Measured on the desktop only; the phone A/B is what decides whether it earns a
+                    // default, so it sits with the other levers still owed one.
+                    IntSetting(
+                        "Prefer cached experts (% of score range)", AppSettings.SUBSTITUTE_CHOICES,
+                        current.substitutePct,
+                        format = { if (it == 0) "off" else "$it%" },
+                        // Needs the streamer and a live cache, for the same reason dropping does: with
+                        // nothing resident there is nothing to prefer.
+                        enabled = stream && cacheOn,
+                    ) { onChange(current.copy(substitutePct = it)) }
+                    Hint(
+                        "When two experts score close, picks the one already in RAM. Same number of " +
+                            "experts, fewer flash reads, faster decode. Changes the reply; 15% is the " +
+                            "measured sweet spot."
+                    )
+                    if (current.substitutePct >= 20) {
+                        Text(
+                            "Past 15% the model degrades faster than its replies show. Judge it on " +
+                                "answers you can check, not on how fluent it sounds.",
+                            fontSize = 12.sp, color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                     LabeledDropdown(
                         "Guess ahead",
                         listOf("Off", "Model's own head (MTP)", "Repeated text (n-gram)"),

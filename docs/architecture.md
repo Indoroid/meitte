@@ -15,6 +15,7 @@ core/
   include/bmoe/ ports (interfaces) + config, pure policy, no llama.cpp dependency
     config.h        RunConfig + validate()
     expert_source.h IExpertSource — the residency strategy port
+    row_source.h    IRowSource - the row-gathered residency port
     recipe.h        MoeRecipe + registry
     metrics.h       TokenMetrics / RunSummary + IMetricsSink
     runtime.h       run() entry point
@@ -24,6 +25,7 @@ core/
     moe/        gguf_offsets (tensor → (shard, offset), split ggufs included), arch_registry,
                 expert_stream_source (one reader per shard), router_hook
                 dense_weights — non-expert weight policy + the residency sensor
+                row_stream - row-gathered tables served from flash (see row-gathered-tables.md)
     engine/     session — composition + the generation loop (open/generate/close)
                 runtime — the one-shot run() wrapper over a Session
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
@@ -50,8 +52,10 @@ already public in llama.cpp:
    node. We ask for the routing nodes (`ffn_moe_topk-<il>`); ggml computes and
    synchronizes each alone, then calls us back with the selected expert ids materialized.
    The route trace and [cache-aware dropping](expert-dropping.md) additionally ask for each
-   layer's `ffn_moe_weights*-<il>` chain — and dropping is the one path that *writes into* a
-   graph tensor's contents rather than only rebinding `->data`. See [seam.md](seam.md).
+   layer's `ffn_moe_weights*-<il>` chain — and dropping and
+   [substitution](cache-aware-substitution.md) are the two paths that *write into* a graph
+   tensor's contents (the weights, and the ids) rather than only rebinding `->data`. See
+   [seam.md](seam.md).
 2. **The expert tensor pointers.** During a one-token warm-up we scan each graph node's
    sources for tensors named `blk.<il>.ffn_{gate,up,down}_exps.weight` and record the
    live `ggml_tensor*`. We then rebind their `->data`.
@@ -100,5 +104,7 @@ session API carries byte buffers and content-part indices, not llama.cpp mtmd ty
 
 Greedy sampling makes the output a deterministic function of the graph — the property the
 [byte-identity gates](../tests/moe_gates.cpp) assert. That holds with the lossy knobs off. Under
-[`--drop-cold-experts`](expert-dropping.md) the hook edits routing weights from live cache state,
-which is not in the graph, so output becomes a function of the graph *and* the run's history.
+[`--drop-cold-experts`](expert-dropping.md) and
+[`--expert-substitute`](cache-aware-substitution.md) the hook edits routing weights or ids from
+live cache state, which is not in the graph, so output becomes a function of the graph *and* the
+run's history.

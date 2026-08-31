@@ -38,6 +38,20 @@ if(UNIX)
     add_test(NAME server_api COMMAND bmoe_server_api_test)
 endif()
 
+# The interval-union stall clock. Injected timestamps, no wall clock, so overlap/nesting/
+# separation and the open-interval snapshot rule are verified exactly (issue #98).
+add_executable(bmoe_stall_union_test stall_union_test.cpp)
+target_link_libraries(bmoe_stall_union_test PRIVATE bmoe_core)
+target_include_directories(bmoe_stall_union_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
+add_test(NAME stall_union COMMAND bmoe_stall_union_test)
+
+# The CSV `# summary` trailer serialization. Drives the sink directly with a filled RunSummary —
+# no model, no llama.cpp — so the emitted key names and units are pinned by a test rather than by
+# whatever script last read them. The prefill keys must match BMOE_DONE's, token for token.
+add_executable(bmoe_csv_summary_test csv_summary_test.cpp)
+target_link_libraries(bmoe_csv_summary_test PRIVATE bmoe_core)
+add_test(NAME csv_summary COMMAND bmoe_csv_summary_test)
+
 find_program(PYTHON3 NAMES python3 python)
 if(PYTHON3)
     add_test(NAME server_cli_parity
