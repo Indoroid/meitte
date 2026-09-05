@@ -68,7 +68,7 @@
 #include <memory>
 #include <string>
 
-using namespace bmoe;
+using namespace meitte;
 
 static RunConfig base(const std::string & model) {
     RunConfig c;

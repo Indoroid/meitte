@@ -2,7 +2,7 @@
 
 #include <fstream>
 
-namespace bmoe {
+namespace meitte {
 
 bool load_media_file(const std::string & path, MediaInput & out, std::string & error) {
     std::ifstream f(path, std::ios::binary | std::ios::ate);
@@ -25,4 +25,4 @@ bool load_media_file(const std::string & path, MediaInput & out, std::string & e
     return true;
 }
 
-} // namespace bmoe
+} // namespace meitte

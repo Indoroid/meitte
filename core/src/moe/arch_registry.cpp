@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-namespace bmoe {
+namespace meitte {
 
 // The registry. Ships Qwen3 MoE (Qwen3-30B-A3B and siblings). Most llama.cpp MoE models
 // are built by the same build_moe_ffn helper and expose the identical
@@ -94,4 +94,4 @@ const MoeRecipe * moe_recipe_at(int i) {
     return (i >= 0 && i < k_n_recipes) ? &k_recipes[i] : nullptr;
 }
 
-} // namespace bmoe
+} // namespace meitte

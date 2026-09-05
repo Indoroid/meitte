@@ -24,7 +24,7 @@
 #include <string>
 #include <vector>
 
-namespace bmoe {
+namespace meitte {
 
 class IRouteTraceSink;
 class IComputeTraceSink;
@@ -47,6 +47,7 @@ struct SessionConfig {
     KvCacheType cache_type_k = KvCacheType::F16;
     KvCacheType cache_type_v = KvCacheType::F16;
     FlashAttentionMode flash_attention = FlashAttentionMode::Auto;
+    std::vector<TensorBufferOverride> tensor_buffer_overrides;
     // Active-expert (top-k) override applied at load via a kv_override on the arch-prefixed
     // expert_used_count key. 0 = use the model's own count. See RunConfig::n_expert_used.
     int n_expert_used = 0;
@@ -249,6 +250,10 @@ public:
                                          IComputeTraceSink * compute_trace = nullptr,
                                          IIoTraceSink * io_trace = nullptr);
 
+    // Buffer-type names currently registered by llama.cpp. This does not load a model and is used
+    // by both binaries' --list-buffer-types option before they require --model.
+    static std::vector<std::string> available_tensor_buffer_types();
+
     // Generate one response. Serialized: one generation at a time per session. `on_token`
     // and `sink` receive the same per-token metrics as run(). Cache state carries over from
     // the previous call. If cancel() fired, returns ok=true with cancelled=true.
@@ -289,4 +294,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace bmoe
+} // namespace meitte

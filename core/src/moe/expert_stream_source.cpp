@@ -18,7 +18,7 @@
 #include <intrin.h> // _mm_pause for the readiness spin-wait
 #endif
 
-namespace bmoe {
+namespace meitte {
 
 using clock_t_ = std::chrono::steady_clock;
 
@@ -32,6 +32,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
                               std::vector<LayerExperts> layers,
                               const MoeStreamConfig & cfg) {
     if (active_) return false;
+    fatal_.store(false, std::memory_order_release);
     if (n_expert <= 0) {
         std::fprintf(stderr, "bmoe: expert streaming needs a MoE model (n_expert=%d)\n", n_expert);
         return false;
@@ -952,7 +953,11 @@ bool ExpertStreamSource::touch_entry(int il, int e, bool & hit, bool promote, in
 
 // ── load: stage routed experts, read the batch, evict cold entries to budget ────────
 bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
-    if (!active_ || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return false;
+    auto fail = [this] {
+        fatal_.store(true, std::memory_order_release);
+        return false;
+    };
+    if (!active_ || il < 0 || il >= n_layer_ || !layers_[il].bound || !ids || n_ids <= 0) return fail();
     if (overlap_) return load_layer_async(il, ids, n_ids);
     LayerExperts & L = layers_[il];
     cgen_++;
@@ -1014,14 +1019,14 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
         }
         seen_[e] = 1;
         ++n_unique;
-        if (!stage(e)) return false;
+        if (!stage(e)) return fail();
     }
     if (load_all_) {
         for (int e = 0; e < n_expert_; ++e) {
             if (seen_[e]) continue;
             seen_[e] = 1;
             ++n_unique;
-            if (!stage(e)) return false;
+            if (!stage(e)) return fail();
         }
     }
     account_demand(il, n_unique);
@@ -1033,7 +1038,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
     if (io_threads_ <= 1 || njobs <= 1) {
         for (size_t i = 0; i < njobs; ++i) {
             const IoJob & j = jobs_[i];
-            if (!read_slice(0, j)) return false;
+            if (!read_slice(0, j)) return fail();
         }
     } else {
         uint64_t my_gen;
@@ -1051,7 +1056,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
             std::unique_lock<std::mutex> lk(io_mtx_);
             io_cv_done_.wait(lk, [&] { return done_cnt_ == njobs || io_stop_; });
         }
-        if (io_err_.load()) return false;
+        if (io_err_.load()) return fail();
     }
     read_ns_.fetch_add((long long) std::chrono::duration_cast<std::chrono::nanoseconds>(clock_t_::now() - t0).count());
 
@@ -1399,7 +1404,6 @@ IExpertSource::Stats ExpertStreamSource::stats() const {
 }
 
 void ExpertStreamSource::shutdown() {
-    if (!active_) return;
 #ifdef BMOE_HAVE_EXPERT_READY_HOOK
     // Unregister the process-global hook FIRST: after this no compute thread can enter
     // on_expert_ready and touch members we are about to tear down.
@@ -1453,4 +1457,4 @@ void ExpertStreamSource::shutdown() {
     active_ = false;
 }
 
-} // namespace bmoe
+} // namespace meitte

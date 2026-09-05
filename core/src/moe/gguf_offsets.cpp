@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <string>
 
-namespace bmoe {
+namespace meitte {
 
 namespace {
 
@@ -164,4 +164,4 @@ GgufMeta read_gguf_meta(const char * path) {
     return out;
 }
 
-} // namespace bmoe
+} // namespace meitte

@@ -9,7 +9,7 @@
 #include <limits>
 #include <string_view>
 
-namespace bmoe {
+namespace meitte {
 
 RouterHook::RouterHook(const MoeRecipe & recipe, int n_layer) : recipe_(recipe), n_layer_(n_layer) {
     const int n = n_layer_ > 0 ? n_layer_ : 0;
@@ -270,7 +270,8 @@ void RouterHook::apply_drop(ggml_tensor * wt) {
     }
 
     if (tracing) pending_.dropped = drop_mask_;
-    source_->load_layer(D.layer, drop_ids_.data(), (int) drop_ids_.size());
+    if (!source_->load_layer(D.layer, drop_ids_.data(), (int) drop_ids_.size()))
+        fatal_.store(true, std::memory_order_release);
     D.deferred = false;
     predict_after_load(D.layer);
     route_ahead_collect(D.layer);
@@ -290,7 +291,8 @@ void RouterHook::close_drop_layer() {
         // terminal node, so the next graph re-learns it and loads at the topk node meanwhile.
         // Deferring again on the same stale guess would repeat the fault every single token; one
         // bad layer in one token is recoverable, a standing bet against a graph that moved is not.
-        source_->load_layer(D.layer, drop_ids_.data(), (int) drop_ids_.size());
+        if (!source_->load_layer(D.layer, drop_ids_.data(), (int) drop_ids_.size()))
+            fatal_.store(true, std::memory_order_release);
         if (D.layer < (int) term_variant_.size()) term_variant_[D.layer] = -1;
         D.deferred = false;
         predict_after_load(D.layer);
@@ -1403,15 +1405,18 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             ggml_tensor * table = t->src[0];
             ggml_tensor * ids = t->src[1];
             if (table && row_source_->serves(table)) {
-                if (ids && ids->data && ids->type == GGML_TYPE_I32)
-                    row_source_->gather(table, (const int32_t *) ids->data, (int) ggml_nelements(ids));
-                else
-                    row_source_->materialize(table); // an index we cannot read: take the whole table
+                if (ids && ids->data && ids->type == GGML_TYPE_I32) {
+                    if (!row_source_->gather(table, (const int32_t *) ids->data, (int) ggml_nelements(ids)))
+                        fatal_.store(true, std::memory_order_release);
+                } else if (!row_source_->materialize(table)) {
+                    fatal_.store(true, std::memory_order_release); // an index we cannot read: take the whole table
+                }
             }
         } else {
             for (int s = 0; s < GGML_MAX_SRC; ++s) {
                 ggml_tensor * src = t->src[s];
-                if (src && row_source_->serves(src)) row_source_->materialize(src);
+                if (src && row_source_->serves(src) && !row_source_->materialize(src))
+                    fatal_.store(true, std::memory_order_release);
             }
         }
     }
@@ -1581,7 +1586,8 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         if (defer) {
             drop_ids_ = gathered_;
         } else {
-            source_->load_layer(il, gathered_.data(), (int) gathered_.size());
+            if (!source_->load_layer(il, gathered_.data(), (int) gathered_.size()))
+                fatal_.store(true, std::memory_order_release);
             // Deferred layers speculate from apply_drop instead — after THEIR load, for the same
             // reason this call sits after the one above: the load's quiesce would cancel it.
             predict_after_load(il);
@@ -1620,4 +1626,4 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
     return true;
 }
 
-} // namespace bmoe
+} // namespace meitte

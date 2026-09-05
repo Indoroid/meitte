@@ -20,7 +20,7 @@
 
 struct ggml_tensor;
 
-namespace bmoe {
+namespace meitte {
 
 // What a row source is holding and what it has done, for telemetry and for the one line a run
 // prints about it. `table_bytes` is what the tables would occupy under the ordinary dense policy
@@ -64,4 +64,4 @@ public:
     virtual RowSourceStats stats() const = 0;
 };
 
-} // namespace bmoe
+} // namespace meitte

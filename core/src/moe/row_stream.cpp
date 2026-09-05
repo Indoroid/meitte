@@ -6,7 +6,7 @@
 #include <cstdio>
 #include <cstring>
 
-namespace bmoe {
+namespace meitte {
 
 RowStream::~RowStream() {
     shutdown();
@@ -264,4 +264,4 @@ void RowStream::shutdown() {
     release();
 }
 
-} // namespace bmoe
+} // namespace meitte

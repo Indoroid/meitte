@@ -3,7 +3,7 @@
 #include <cstdio>
 #include <mutex>
 
-namespace bmoe::detail {
+namespace meitte::detail {
 
 common_chat_parser_params build_parse_params(const common_chat_params & cp) {
     common_chat_parser_params pp(cp);
@@ -20,4 +20,4 @@ void warn_parse_failed_once(const char * what) {
     });
 }
 
-} // namespace bmoe::detail
+} // namespace meitte::detail

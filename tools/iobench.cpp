@@ -7,7 +7,7 @@
 // device's ceiling — the question that has to be answered BEFORE raising it, since a cap that is
 // already at the hardware limit costs memory (one fd + one bounce buffer per lane) for nothing.
 //
-// It deliberately drives bmoe::FileReader, the same read path the engine uses, rather than a
+// It deliberately drives meitte::FileReader, the same read path the engine uses, rather than a
 // hand-rolled pread loop: the alignment, the bounce buffer and the O_DIRECT verification/fallback
 // are part of what is being measured. Nothing here links the engine or llama.cpp — the I/O layer
 // stands alone, so this builds in seconds and cannot perturb the streamer.
@@ -69,7 +69,7 @@ struct LaneResult {
 // are block-aligned and kept a slice away from EOF so every read is a full window (the
 // sub-alignment tail would otherwise take FileReader's buffered fallback and quietly measure the
 // page cache instead of the drive).
-void lane_worker(bmoe::FileReader * r,
+void lane_worker(meitte::FileReader * r,
                  int lane,
                  size_t slice,
                  int scatter,
@@ -80,11 +80,11 @@ void lane_worker(bmoe::FileReader * r,
     // Equal-total-bytes split, each piece its own aligned window — otherwise scatter rows would
     // compare different traffic volumes, not different layouts.
     const size_t piece = ((slice / (size_t) scatter) + align - 1) & ~(align - 1);
-    void * dst = bmoe::pio::alloc_aligned(align, piece);
+    void * dst = meitte::pio::alloc_aligned(align, piece);
     if (!dst) return;
     const uint64_t span = (fsize > piece * 2) ? (fsize - piece * 2) : 0;
     if (span == 0) {
-        bmoe::pio::aligned_free(dst);
+        meitte::pio::aligned_free(dst);
         return;
     }
     Lcg rng((uint64_t) lane + 1);
@@ -96,7 +96,7 @@ void lane_worker(bmoe::FileReader * r,
             const long long got = r->read(lane, dst, off, piece);
             const auto t1 = clock_t_::now();
             if (got < 0) {
-                bmoe::pio::aligned_free(dst);
+                meitte::pio::aligned_free(dst);
                 *out = acc;
                 return;
             }
@@ -105,7 +105,7 @@ void lane_worker(bmoe::FileReader * r,
             acc.busy_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
         }
     }
-    bmoe::pio::aligned_free(dst);
+    meitte::pio::aligned_free(dst);
     *out = acc;
 }
 
@@ -135,10 +135,10 @@ bool run_row(const std::string & path,
              double seconds,
              int load,
              double * mibs_out) {
-    bmoe::FileReader r;
+    meitte::FileReader r;
     // Ask the OS rather than assuming 4096: alignment is exactly the variable this tool exists to
     // characterise, so a device with a 16 KiB page must be measured at its own page size, not ours.
-    const size_t align = bmoe::pio::vm_page();
+    const size_t align = meitte::pio::vm_page();
     const size_t bounce_cap = slice + 2 * align; // mirrors what the streamer asks for
     if (!r.open(path, lanes, direct, align, bounce_cap)) {
         std::fprintf(stderr, "open failed (lanes=%d)\n", lanes);

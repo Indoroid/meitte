@@ -2,7 +2,7 @@
 
 #include <cstdio>
 
-namespace bmoe {
+namespace meitte {
 
 namespace {
 
@@ -98,4 +98,4 @@ IIoTraceSink * make_csv_io_trace_sink(const std::string & path) {
     return f ? new CsvIoTraceSink(f) : nullptr;
 }
 
-} // namespace bmoe
+} // namespace meitte

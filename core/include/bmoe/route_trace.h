@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-namespace bmoe {
+namespace meitte {
 
 // How a routed expert stood against the expert cache at the instant it was routed — i.e. what
 // that routing cost. Ordered by cost: miss pays a flash read, the other two do not.
@@ -73,4 +73,4 @@ public:
 // one row per routed expert. Returns nullptr if the file cannot be opened.
 IRouteTraceSink * make_csv_route_trace_sink(const std::string & path);
 
-} // namespace bmoe
+} // namespace meitte

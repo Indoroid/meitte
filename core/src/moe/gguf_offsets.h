@@ -15,7 +15,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace bmoe {
+namespace meitte {
 
 struct GgufOffsets {
     // tensor name -> byte offset of its data (data_offset + per-tensor offset) WITHIN ITS SHARD
@@ -66,4 +66,4 @@ struct GgufMeta {
 };
 GgufMeta read_gguf_meta(const char * path);
 
-} // namespace bmoe
+} // namespace meitte

@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-using namespace bmoe;
+using namespace meitte;
 
 static int failures = 0;
 

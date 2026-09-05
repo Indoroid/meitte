@@ -12,7 +12,7 @@
 #include <limits>
 #include <string>
 
-using namespace bmoe;
+using namespace meitte;
 
 static int failures = 0;
 
@@ -74,6 +74,18 @@ int main() {
         }());
     }
     {
+        std::vector<TensorBufferOverride> overrides;
+        std::string error;
+        expect_true("tensor override parser accepts upstream syntax", [&] {
+            return parse_tensor_buffer_overrides("token_embd=CPU,output=CUDA0", overrides, error) &&
+                   overrides.size() == 2 && overrides[0].pattern == "token_embd" && overrides[1].buffer_type == "CUDA0";
+        }());
+        expect_true("tensor override parser rejects incomplete syntax", [&] {
+            overrides.clear();
+            return !parse_tensor_buffer_overrides("token_embd=", overrides, error) && !error.empty();
+        }());
+    }
+    {
         RunConfig c = ok_base();
         c.cache_type_v = KvCacheType::Q4_0;
         c.flash_attention = FlashAttentionMode::Disabled;
@@ -107,6 +119,13 @@ int main() {
         RunConfig c = ok_base();
         c.n_expert_used = -1;
         expect_fail("n_expert_used must be >= 0", c);
+    }
+    {
+        RunConfig c = ok_base();
+        c.tensor_buffer_overrides.push_back({"token_embd", "CPU"});
+        expect_ok("tensor placement override without streaming", c);
+        c.moe.enabled = true;
+        expect_fail("tensor placement override excludes streaming", c);
     }
 
     // Streaming rules.
@@ -369,6 +388,14 @@ int main() {
         expect_fail("the narrow ubatch is rejected with the n-gram source too", c);
         c.spec.source = DraftSource::none;
         expect_ok("the same narrow ubatch is fine without speculation", c);
+    }
+
+    {
+        RunConfig c = ok_base();
+        c.reasoning_budget_tokens = 0;
+        expect_ok("zero reasoning budget is valid", c);
+        c.reasoning_budget_tokens = -2;
+        expect_fail("reasoning budget below -1 is rejected", c);
     }
 
     if (failures == 0) {

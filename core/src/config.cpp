@@ -4,7 +4,7 @@
 #include <cctype>
 #include <utility>
 
-namespace bmoe {
+namespace meitte {
 
 namespace {
 
@@ -69,6 +69,26 @@ bool parse_flash_attention_mode(const std::string & value, FlashAttentionMode & 
     return true;
 }
 
+bool parse_tensor_buffer_overrides(const std::string & value,
+                                   std::vector<TensorBufferOverride> & out,
+                                   std::string & error) {
+    size_t begin = 0;
+    while (begin <= value.size()) {
+        const size_t comma = value.find(',', begin);
+        const std::string item = value.substr(begin, comma == std::string::npos ? std::string::npos : comma - begin);
+        const size_t equal = item.find('=');
+        if (equal == std::string::npos || equal == 0 || equal + 1 == item.size()) {
+            error = "--override-tensor expects PATTERN=BUFFER_TYPE[,PATTERN=BUFFER_TYPE...]";
+            return false;
+        }
+        out.push_back({item.substr(0, equal), item.substr(equal + 1)});
+        if (comma == std::string::npos) return true;
+        begin = comma + 1;
+    }
+    error = "--override-tensor expects PATTERN=BUFFER_TYPE[,PATTERN=BUFFER_TYPE...]";
+    return false;
+}
+
 ValidationResult validate(const RunConfig & cfg) {
     ValidationResult r;
     auto fail = [&](std::string msg) {
@@ -118,6 +138,16 @@ ValidationResult validate(const RunConfig & cfg) {
         return fail("reasoning_effort requires thinking to be enabled (use 'none' to disable reasoning)");
     }
     if (cfg.reasoning_effort.size() > 64) return fail("reasoning_effort must be at most 64 bytes");
+    if (cfg.reasoning_budget_tokens < -1)
+        return fail("reasoning_budget_tokens must be -1 (unrestricted) or >= 0");
+    for (const TensorBufferOverride & override : cfg.tensor_buffer_overrides) {
+        if (override.pattern.empty() || override.buffer_type.empty())
+            return fail("tensor buffer overrides require both a pattern and a buffer type");
+    }
+    if (cfg.moe.enabled && !cfg.tensor_buffer_overrides.empty()) {
+        return fail("tensor buffer overrides cannot be combined with MoE streaming: streamed experts require native "
+                    "GGUF offsets and tensor pointers");
+    }
     if (cfg.cache_type_v != KvCacheType::F32 && cfg.cache_type_v != KvCacheType::F16 &&
         cfg.cache_type_v != KvCacheType::BF16 && cfg.flash_attention == FlashAttentionMode::Disabled) {
         return fail("quantized V cache requires Flash Attention; use auto/on or choose an unquantized V cache type");
@@ -329,4 +359,4 @@ ValidationResult validate(const RunConfig & cfg) {
     return r;
 }
 
-} // namespace bmoe
+} // namespace meitte

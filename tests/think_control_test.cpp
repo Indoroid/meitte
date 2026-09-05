@@ -83,7 +83,7 @@ static std::string render(const common_chat_templates * tmpls, bool think, bool 
     inputs.use_jinja = true;
     inputs.enable_thinking = think;
     inputs.reasoning_format = COMMON_REASONING_FORMAT_AUTO;
-    if (prefill) bmoe::detail::add_no_think_prefill(inputs);
+    if (prefill) meitte::detail::add_no_think_prefill(inputs);
 
     return common_chat_templates_apply(const_cast<common_chat_templates *>(tmpls), inputs).prompt;
 }
@@ -113,7 +113,7 @@ int main() {
         {
             auto t = load(BMOE_TMPL_QWEN3);
             expect("qwen3: template honours enable_thinking",
-                   bmoe::detail::probe_think_control(t.get()) == bmoe::ThinkControl::Template);
+                   meitte::detail::probe_think_control(t.get()) == meitte::ThinkControl::Template);
         }
 
         // LFM2.5 — the model from issue #82. Its template never mentions enable_thinking, so both
@@ -126,7 +126,7 @@ int main() {
             expect("lfm2.5: flag is inert in the template", render(t.get(), /*think*/ true, /*prefill*/ false) ==
                                                                 render(t.get(), /*think*/ false, /*prefill*/ false));
             expect("lfm2.5: probed as none (declares its own reasoning tags)",
-                   bmoe::detail::probe_think_control(t.get()) == bmoe::ThinkControl::None);
+                   meitte::detail::probe_think_control(t.get()) == meitte::ThinkControl::None);
             // The prefill itself is well-formed — this is why "none" is a statement about the
             // MODEL, not about a mechanism that failed to render.
             expect_span_closed("lfm2.5: the prefill would close the span correctly", t.get(), "</think>");
@@ -140,7 +140,7 @@ int main() {
         {
             auto t = load(BMOE_TMPL_GPTOSS);
             expect("gpt-oss: probed as prefill",
-                   bmoe::detail::probe_think_control(t.get()) == bmoe::ThinkControl::Prefill);
+                   meitte::detail::probe_think_control(t.get()) == meitte::ThinkControl::Prefill);
 
             const std::string prefilled = render(t.get(), /*think*/ false, /*prefill*/ true);
             const std::string thinking = render(t.get(), /*think*/ true, /*prefill*/ false);
@@ -158,7 +158,7 @@ int main() {
         for (const char * p : {BMOE_TMPL_LFM2, BMOE_TMPL_LFM25_INSTRUCT}) {
             auto t = load(p);
             const std::string name = std::string("non-reasoning lfm variant is not reported uncontrollable: ") + p;
-            expect(name.c_str(), bmoe::detail::probe_think_control(t.get()) == bmoe::ThinkControl::Template);
+            expect(name.c_str(), meitte::detail::probe_think_control(t.get()) == meitte::ThinkControl::Template);
         }
 
         // Gemma 4 reads enable_thinking, so it never reaches the tag test at all — pinned because it
@@ -166,7 +166,7 @@ int main() {
         {
             auto t = load(BMOE_TMPL_GEMMA4);
             expect("gemma4: template honours enable_thinking",
-                   bmoe::detail::probe_think_control(t.get()) == bmoe::ThinkControl::Template);
+                   meitte::detail::probe_think_control(t.get()) == meitte::ThinkControl::Template);
         }
 
         // A template with no reasoning of any kind. Nothing to suppress, so nothing to report: None
@@ -175,18 +175,18 @@ int main() {
             auto t = common_chat_templates_init(
                 nullptr, "{% for m in messages %}{{ m.role }}: {{ m.content }}\n{% endfor %}assistant:");
             expect("plain template: nothing to suppress, so not reported uncontrollable",
-                   bmoe::detail::probe_think_control(t.get()) == bmoe::ThinkControl::Template);
+                   meitte::detail::probe_think_control(t.get()) == meitte::ThinkControl::Template);
         }
 
         // A probe that could not run is no evidence the flag is inert: fail open to the
         // pre-existing behaviour rather than declaring the model uncontrollable.
         expect("null templates: fails open to template",
-               bmoe::detail::probe_think_control(nullptr) == bmoe::ThinkControl::Template);
+               meitte::detail::probe_think_control(nullptr) == meitte::ThinkControl::Template);
 
         expect("names are stable",
-               std::string(bmoe::think_control_name(bmoe::ThinkControl::Prefill)) == "prefill" &&
-                   std::string(bmoe::think_control_name(bmoe::ThinkControl::None)) == "none" &&
-                   std::string(bmoe::think_control_name(bmoe::ThinkControl::Template)) == "template");
+               std::string(meitte::think_control_name(meitte::ThinkControl::Prefill)) == "prefill" &&
+                   std::string(meitte::think_control_name(meitte::ThinkControl::None)) == "none" &&
+                   std::string(meitte::think_control_name(meitte::ThinkControl::Template)) == "template");
     } catch (const std::exception & e) {
         std::printf("[FAIL] unexpected exception: %s\n", e.what());
         ++failures;

@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace bmoe {
+namespace meitte {
 
 struct MtmdPrefillResult {
     bool ok = false;
@@ -38,4 +38,4 @@ private:
     mtmd::context_ptr ctx_{nullptr};
 };
 
-} // namespace bmoe
+} // namespace meitte

@@ -11,7 +11,7 @@
 
 #include "chat.h"
 
-namespace bmoe::detail {
+namespace meitte::detail {
 
 // Turn a rendered turn into one that starts with the model's reasoning span already closed.
 //
@@ -53,4 +53,4 @@ void add_no_think_prefill(common_chat_templates_inputs & inputs);
 // because a probe that itself failed is no evidence that the flag is inert.
 ThinkControl probe_think_control(const common_chat_templates * tmpls);
 
-} // namespace bmoe::detail
+} // namespace meitte::detail

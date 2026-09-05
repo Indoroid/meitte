@@ -47,7 +47,7 @@
 
 struct ggml_tensor;
 
-namespace bmoe {
+namespace meitte {
 
 class RouterHook {
 public:
@@ -90,6 +90,10 @@ public:
     // Install the row-gathered residency policy (see bmoe/row_source.h). Non-null makes the stream
     // pass check every gather node against it and make the rows present before the node runs.
     void set_row_source(IRowSource * src) { row_source_ = src; }
+
+    // A failed demand read means the graph cannot safely consume the corresponding tensor. The
+    // session's abort callback observes this between graph operations.
+    bool fatal() const { return fatal_.load(std::memory_order_acquire); }
 
     // Temporal prefetch depth K: while streaming layer l, hint the source to read ahead the
     // experts the previous token used at layers l+1..l+K. 0 (default) disables it.
@@ -283,6 +287,7 @@ private:
     bool capturing_ = false;
     IExpertSource * source_ = nullptr;  // non-null → stream mode
     IRowSource * row_source_ = nullptr; // row-gathered dense tables, when the policy is on
+    std::atomic<bool> fatal_{false};
     std::vector<LayerExperts> captured_;
     std::unordered_map<std::string, ggml_tensor *> captured_weights_;
     // Capture-time evidence for row_gathered_weights(): every weight seen as the TABLE of a row
@@ -523,4 +528,4 @@ private:
     std::vector<ComputeTraceRow> compute_rows_;
 };
 
-} // namespace bmoe
+} // namespace meitte

@@ -2,7 +2,7 @@
 
 #include "mtmd-helper.h"
 
-namespace bmoe {
+namespace meitte {
 
 bool MtmdRuntime::init(const MultimodalConfig & cfg,
                        const llama_model * model,
@@ -125,4 +125,4 @@ MtmdPrefillResult MtmdRuntime::prefill(llama_context * lctx,
     return out;
 }
 
-} // namespace bmoe
+} // namespace meitte

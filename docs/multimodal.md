@@ -46,7 +46,12 @@ limited to 32 MiB, all decoded media in one request to 64 MiB, and the HTTP body
 
 ## Current boundaries
 
-- A request containing media starts from a clear KV cache; multimodal KV continuation is rejected.
+- A request containing media starts from a clear KV cache. It can then be continued with text-only
+  turns when the caller preserves the KV; a continuation cannot add or replace media, so reset with
+  `clear_kv: true` before sending another image or audio input.
+- `bmoe-server --kv-preserve` retains one incremental conversation. After the image request, send
+  only the next user message to `POST /v1/chat/completions`; `{"clear_kv":true}` begins a new
+  conversation. This state is server-wide, not isolated per HTTP client.
 - MTP and n-gram speculation are rejected for media requests.
 - Route, compute, and I/O tracing are rejected during multimodal prefill.
 - Video input is not built.

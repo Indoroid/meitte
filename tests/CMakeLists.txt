@@ -28,6 +28,10 @@ add_executable(bmoe_config_test config_test.cpp)
 target_link_libraries(bmoe_config_test PRIVATE bmoe_core)
 add_test(NAME config_validate COMMAND bmoe_config_test)
 
+add_executable(bmoe_session_protocol_test session_protocol_test.cpp)
+target_link_libraries(bmoe_session_protocol_test PRIVATE bmoe_cli_protocol)
+add_test(NAME session_protocol COMMAND bmoe_session_protocol_test)
+
 add_executable(bmoe_ngram_test ngram_test.cpp)
 target_link_libraries(bmoe_ngram_test PRIVATE bmoe_core)
 add_test(NAME ngram_draft COMMAND bmoe_ngram_test)

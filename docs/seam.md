@@ -63,6 +63,11 @@ without loading any tensor data. We match these to the captured tensors by name.
 
 Model loading also stays on the public API: `llama_model_params.load_mode` is fixed to
 `LLAMA_LOAD_MODE_MMAP`, and `use_extra_bufts=false` prevents repacking before tensor rebinding.
+The CLI and server expose llama.cpp's placement-only `--override-tensor PATTERN=BUFFER_TYPE` API
+for fully resident runs. It selects a buffer while the model loads; it does not rewrite the GGUF.
+It is rejected with `--moe-stream`, because an arbitrary regex could place a streamed expert in a
+different buffer and invalidate the native-offset rebinding contract. `--list-buffer-types` reports
+the buffer names registered by the current build.
 
 ## 3. The expert-ready hook (fork extension)
 

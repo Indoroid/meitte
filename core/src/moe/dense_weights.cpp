@@ -7,7 +7,7 @@
 #include <chrono>
 #include <cstdio>
 
-namespace bmoe {
+namespace meitte {
 
 using clock_t_ = std::chrono::steady_clock;
 
@@ -461,4 +461,4 @@ void DenseWeights::shutdown() {
     readers_.clear();
 }
 
-} // namespace bmoe
+} // namespace meitte

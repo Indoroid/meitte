@@ -35,7 +35,7 @@
 #include <string>
 #include <vector>
 
-namespace bmoe {
+namespace meitte {
 
 // One isolated graph node's compute. Emitted only while the compute trace is on.
 struct ComputeTraceRow {
@@ -102,4 +102,4 @@ public:
 IComputeTraceSink * make_csv_compute_trace_sink(const std::string & path);
 IIoTraceSink * make_csv_io_trace_sink(const std::string & path);
 
-} // namespace bmoe
+} // namespace meitte

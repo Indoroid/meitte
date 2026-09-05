@@ -15,6 +15,7 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/decode_trace.h"
 #include "bmoe/version.h"
+#include "session_protocol.h"
 
 #include <algorithm>
 #include <atomic>
@@ -42,7 +43,8 @@
 
 #include <nlohmann/json.hpp>
 
-using namespace bmoe;
+using namespace meitte;
+using SessionCmd = SessionCommand;
 using json = nlohmann::json;
 
 static int env_int(const char * k, int dflt) {
@@ -50,36 +52,17 @@ static int env_int(const char * k, int dflt) {
     return (v && *v) ? std::atoi(v) : dflt;
 }
 
+static std::string normalize_reasoning_effort(std::string value) {
+    std::string lower = value;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lower == "low" || lower == "medium" || lower == "high" || lower == "none") return lower;
+    return value;
+}
+
 static std::string json_escape(const std::string & s) {
-    std::string o;
-    o.reserve(s.size() + 8);
-    for (char c : s) {
-        switch (c) {
-        case '"':
-            o += "\\\"";
-            break;
-        case '\\':
-            o += "\\\\";
-            break;
-        case '\n':
-            o += "\\n";
-            break;
-        case '\r':
-            o += "\\r";
-            break;
-        case '\t':
-            o += "\\t";
-            break;
-        default:
-            if ((unsigned char) c < 0x20) {
-                char b[8];
-                std::snprintf(b, sizeof(b), "\\u%04x", c);
-                o += b;
-            } else
-                o += c;
-        }
-    }
-    return o;
+    const std::string quoted = json(s).dump(-1, ' ', false, json::error_handler_t::replace);
+    return quoted.size() >= 2 ? quoted.substr(1, quoted.size() - 2) : std::string{};
 }
 
 static bool read_text_file(const std::string & path, std::string & out, std::string & error) {
@@ -133,349 +116,16 @@ static void emit_progress_line(const TokenMetrics & m, ProgressDelta & st) {
     std::fflush(stdout);
 }
 
-// ── minimal flat-JSON reading for the --session request protocol ──
-// The session request objects are flat (string/int/bool fields only), so a tiny hand-rolled
-// extractor keeps the CLI dependency-free, mirroring the hand-written JSON it already emits.
-
-static std::string json_unescape(const std::string & s) {
-    std::string o;
-    o.reserve(s.size());
-    for (size_t i = 0; i < s.size(); ++i) {
-        if (s[i] != '\\' || i + 1 >= s.size()) {
-            o += s[i];
-            continue;
-        }
-        char c = s[++i];
-        switch (c) {
-        case 'n':
-            o += '\n';
-            break;
-        case 'r':
-            o += '\r';
-            break;
-        case 't':
-            o += '\t';
-            break;
-        case '"':
-            o += '"';
-            break;
-        case '\\':
-            o += '\\';
-            break;
-        case '/':
-            o += '/';
-            break;
-        case 'u':
-            if (i + 4 < s.size()) {
-                int code = (int) std::strtol(s.substr(i + 1, 4).c_str(), nullptr, 16);
-                // The protocol only carries ASCII control chars as \u00xx (from json_escape);
-                // decode those directly. Anything else is passed through as the literal char.
-                o += (char) (code & 0xff);
-                i += 4;
-            }
-            break;
-        default:
-            o += c;
-            break;
-        }
-    }
-    return o;
-}
-
-// Find `"key"`, skip to its value. Returns the index just past the colon, or npos.
-static size_t json_value_pos(const std::string & line, const char * key) {
-    std::string pat = std::string("\"") + key + "\"";
-    size_t k = line.find(pat);
-    if (k == std::string::npos) return std::string::npos;
-    size_t c = line.find(':', k + pat.size());
-    if (c == std::string::npos) return std::string::npos;
-    return c + 1;
-}
-
-static bool json_get_string(const std::string & line, const char * key, std::string & out) {
-    size_t p = json_value_pos(line, key);
-    if (p == std::string::npos) return false;
-    while (p < line.size() && (line[p] == ' ' || line[p] == '\t'))
-        ++p;
-    if (p >= line.size() || line[p] != '"') return false;
-    ++p;
-    std::string raw;
-    for (; p < line.size(); ++p) {
-        if (line[p] == '\\' && p + 1 < line.size()) {
-            raw += line[p];
-            raw += line[p + 1];
-            ++p;
-        } else if (line[p] == '"') {
-            break;
-        } else {
-            raw += line[p];
-        }
-    }
-    out = json_unescape(raw);
-    return true;
-}
-
-static int json_get_int(const std::string & line, const char * key, int dflt) {
-    size_t p = json_value_pos(line, key);
-    if (p == std::string::npos) return dflt;
-    return std::atoi(line.c_str() + p);
-}
-
-static bool json_get_bool(const std::string & line, const char * key, bool dflt) {
-    size_t p = json_value_pos(line, key);
-    if (p == std::string::npos) return dflt;
-    while (p < line.size() && (line[p] == ' ' || line[p] == '\t'))
-        ++p;
-    return line.compare(p, 4, "true") == 0;
-}
-
-// A parsed stdin command. cancel is handled inline by the reader thread (it calls
-// Session::cancel directly), so only generate/close travel through the queue.
-struct SessionCmd {
-    enum Kind { kGenerate, kError, kClose } kind;
-    std::string prompt;
-    std::vector<ChatMessage> messages;
-    int id = 0;
-    int n_predict = 128;
-    bool think = true;
-    std::string reasoning_effort;
-    std::map<std::string, std::string> chat_template_kwargs;
-    std::string error;
-    bool clear_kv = true;
-};
-
-static std::string normalize_reasoning_effort(std::string value) {
-    std::string lower = value;
-    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    if (lower == "low" || lower == "medium" || lower == "high" || lower == "none") return lower;
-    return value;
-}
-
-static bool parse_session_messages(const json & value, std::vector<ChatMessage> & out, std::string & error) {
-    if (!value.is_array() || value.empty()) {
-        error = "messages must be a non-empty array";
-        return false;
-    }
-    for (const json & item : value) {
-        if (!item.is_object() || !item.contains("role") || !item["role"].is_string()) {
-            error = "each message needs a string role";
-            return false;
-        }
-        ChatMessage message;
-        message.role = item["role"].get<std::string>();
-        if (item.contains("content")) {
-            if (!item["content"].is_null() && !item["content"].is_string()) {
-                error = "message content must be a string or null";
-                return false;
-            }
-            if (item["content"].is_string()) message.content = item["content"].get<std::string>();
-        }
-        if (item.contains("reasoning_content")) {
-            if (!item["reasoning_content"].is_string()) {
-                error = "reasoning_content must be a string";
-                return false;
-            }
-            message.reasoning_content = item["reasoning_content"].get<std::string>();
-        }
-        if (item.contains("name")) {
-            if (!item["name"].is_string()) {
-                error = "name must be a string";
-                return false;
-            }
-            message.tool_name = item["name"].get<std::string>();
-        }
-        if (item.contains("tool_call_id")) {
-            if (!item["tool_call_id"].is_string()) {
-                error = "tool_call_id must be a string";
-                return false;
-            }
-            message.tool_call_id = item["tool_call_id"].get<std::string>();
-        }
-        if (item.contains("tool_calls")) {
-            if (!item["tool_calls"].is_array()) {
-                error = "tool_calls must be an array";
-                return false;
-            }
-            for (const json & item_call : item["tool_calls"]) {
-                if (!item_call.is_object() || !item_call.contains("function") || !item_call["function"].is_object()) {
-                    error = "each tool call needs a function object";
-                    return false;
-                }
-                const json & function = item_call["function"];
-                if (!function.contains("name") || !function["name"].is_string() ||
-                    !function.contains("arguments") || !function["arguments"].is_string()) {
-                    error = "each tool call function needs string name and arguments";
-                    return false;
-                }
-                ToolCall call;
-                call.id = item_call.value("id", "");
-                call.name = function["name"].get<std::string>();
-                call.arguments = function["arguments"].get<std::string>();
-                message.tool_calls.push_back(std::move(call));
-            }
-        }
-        if (message.role.empty() || (!item.contains("content") && message.tool_calls.empty())) {
-            error = "each message needs a role and content or tool_calls";
-            return false;
-        }
-        out.push_back(std::move(message));
-    }
-    return true;
-}
-
-static bool parse_session_kwargs(const json & value,
-                                 std::map<std::string, std::string> & out,
-                                 std::optional<bool> & generic_think,
-                                 std::optional<std::string> & generic_effort,
-                                 std::string & error) {
-    if (!value.is_object()) {
-        error = "chat_template_kwargs must be an object";
-        return false;
-    }
-    for (auto it = value.begin(); it != value.end(); ++it) {
-        if (it.key().empty() || it.key().size() > 128) {
-            error = "chat_template_kwargs keys must be 1..128 bytes";
-            return false;
-        }
-        if (it.key() == "enable_thinking") {
-            if (!it.value().is_boolean()) {
-                error = "chat_template_kwargs.enable_thinking must be a boolean";
-                return false;
-            }
-            generic_think = it.value().get<bool>();
-        } else if (it.key() == "reasoning_effort") {
-            if (!it.value().is_string()) {
-                error = "chat_template_kwargs.reasoning_effort must be a string";
-                return false;
-            }
-            generic_effort = normalize_reasoning_effort(it.value().get<std::string>());
-            if (generic_effort->empty()) {
-                error = "chat_template_kwargs.reasoning_effort must be non-empty";
-                return false;
-            }
-        } else {
-            out[it.key()] = it.value().dump();
-        }
-    }
-    return true;
-}
-
-static bool parse_session_generate(const json & root, const RunConfig & cfg, SessionCmd & out, std::string & error) {
-    const bool has_prompt = root.contains("prompt");
-    const bool has_messages = root.contains("messages");
-    if (has_prompt == has_messages) {
-        error = "generate requires exactly one of prompt or messages";
-        return false;
-    }
-    if (has_prompt) {
-        if (!root["prompt"].is_string() || root["prompt"].get<std::string>().empty()) {
-            error = "prompt must be a non-empty string";
-            return false;
-        }
-        out.prompt = root["prompt"].get<std::string>();
-    } else if (!parse_session_messages(root["messages"], out.messages, error)) {
-        return false;
-    }
-    if (root.contains("id")) {
-        if (!root["id"].is_number_integer()) {
-            error = "id must be an integer";
-            return false;
-        }
-        out.id = root["id"].get<int>();
-    }
-    if (root.contains("n_predict")) {
-        if (!root["n_predict"].is_number_integer() || root["n_predict"].get<int>() < 1) {
-            error = "n_predict must be a positive integer";
-            return false;
-        }
-        out.n_predict = root["n_predict"].get<int>();
-    } else {
-        out.n_predict = cfg.n_predict;
-    }
-    std::optional<bool> explicit_think;
-    if (root.contains("think")) {
-        if (!root["think"].is_boolean()) {
-            error = "think must be a boolean";
-            return false;
-        }
-        explicit_think = root["think"].get<bool>();
-    }
-    std::optional<std::string> explicit_effort;
-    std::optional<bool> generic_think;
-    if (root.contains("chat_template_kwargs") &&
-        !parse_session_kwargs(root["chat_template_kwargs"], out.chat_template_kwargs, generic_think, explicit_effort, error))
-        return false;
-    if (explicit_think && generic_think && *explicit_think != *generic_think) {
-        error = "conflicting thinking controls: think and chat_template_kwargs.enable_thinking disagree";
-        return false;
-    }
-    const bool request_think_control = explicit_think.has_value() || generic_think.has_value();
-    out.think = explicit_think.value_or(generic_think.value_or(cfg.think));
-    std::optional<std::string> typed_effort;
-    if (root.contains("reasoning_effort")) {
-        if (!root["reasoning_effort"].is_string() || root["reasoning_effort"].get<std::string>().empty()) {
-            error = "reasoning_effort must be a non-empty string";
-            return false;
-        }
-        typed_effort = normalize_reasoning_effort(root["reasoning_effort"].get<std::string>());
-    }
-    if (typed_effort && explicit_effort && *typed_effort != *explicit_effort) {
-        error = "conflicting reasoning_effort controls";
-        return false;
-    }
-    if (typed_effort) explicit_effort = std::move(typed_effort);
-    out.reasoning_effort = explicit_effort.value_or(cfg.reasoning_effort);
-    if (out.reasoning_effort.size() > 64) {
-        error = "reasoning_effort must be at most 64 bytes";
-        return false;
-    }
-    if (out.reasoning_effort == "none") {
-        out.think = false;
-        out.reasoning_effort.clear();
-    } else if (explicit_effort && !request_think_control) {
-        out.think = true;
-    } else if (!out.think) {
-        out.reasoning_effort.clear();
-    }
-    if (root.contains("clear_kv")) {
-        if (!root["clear_kv"].is_boolean()) {
-            error = "clear_kv must be a boolean";
-            return false;
-        }
-        out.clear_kv = root["clear_kv"].get<bool>();
-    }
-    return true;
-}
-
-static bool parse_session_line(const std::string & line, const RunConfig & cfg, SessionCmd & out, std::string & error) {
-    json root = json::parse(line, nullptr, false);
-    if (root.is_discarded() || !root.is_object()) {
-        error = "command must be a JSON object";
-        return false;
-    }
-    if (!root.contains("cmd") || !root["cmd"].is_string()) {
-        error = "cmd must be a string";
-        return false;
-    }
-    const std::string cmd = root["cmd"].get<std::string>();
-    if (root.contains("id") && root["id"].is_number_integer()) out.id = root["id"].get<int>();
-    if (cmd == "close") {
-        out.kind = SessionCmd::kClose;
-        return true;
-    }
-    if (cmd != "generate") {
-        error = "unknown command: " + cmd;
-        return false;
-    }
-    out.kind = SessionCmd::kGenerate;
-    return parse_session_generate(root, cfg, out, error);
-}
-
 // Interactive session: keep the model loaded and the expert cache warm across prompts, reading
 // one JSON request per line from stdin and emitting the BMOE_* line protocol on stdout. See
 // docs/telemetry.md. Returns the process exit code.
+struct SessionLoopState {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::deque<SessionCmd> queue;
+    std::atomic<bool> stop{false};
+};
+
 static int run_session_loop(const RunConfig & cfg,
                             IMetricsSink * sink,
                             IRouteTraceSink * route_trace,
@@ -484,12 +134,14 @@ static int run_session_loop(const RunConfig & cfg,
     const SessionConfig sc = session_config_from(cfg);
 
     std::string error;
-    std::unique_ptr<Session> session = Session::open(sc, error, route_trace, compute_trace, io_trace);
-    if (!session) {
+    std::unique_ptr<Session> opened = Session::open(sc, error, route_trace, compute_trace, io_trace);
+    if (!opened) {
         std::printf("BMOE_ERROR {\"id\":0,\"fatal\":true,\"msg\":\"%s\"}\n", json_escape(error).c_str());
         std::fflush(stdout);
         return 1;
     }
+    std::shared_ptr<Session> session(std::move(opened));
+    bool kv_preserve_started = false;
     // think_ctl states, once, whether this model can honour a think=false request at all, so a UI
     // can disable its Thinking control instead of leaving one that silently does nothing (#82).
     // n_expert_used is the EFFECTIVE routing width, after any override. A UI needs it to say
@@ -498,64 +150,52 @@ static int run_session_loop(const RunConfig & cfg,
     std::printf("BMOE_READY {\"load_s\":%.3f,\"arch\":\"%s\",\"n_ctx\":%d,\"think_ctl\":\"%s\","
                 "\"reasoning_effort\":true,\"n_expert_used\":%d}\n",
                 session->load_seconds(), json_escape(session->arch()).c_str(), session->n_ctx(),
-                bmoe::think_control_name(session->think_control()), session->n_expert_used());
+                meitte::think_control_name(session->think_control()), session->n_expert_used());
     std::fflush(stdout);
 
-    std::mutex mtx;
-    std::condition_variable cv;
-    std::deque<SessionCmd> queue;
-    std::atomic<bool> stop{false};
+    auto state = std::make_shared<SessionLoopState>();
+    const std::weak_ptr<Session> reader_session = session;
 
-    // Reader thread: parse stdin lines. "cancel" is applied immediately (thread-safe) so it can
-    // interrupt an in-flight generate; "generate"/"close" are queued for the main loop. EOF ends
-    // the session like an explicit close.
-    std::thread reader([&] {
+    // Reader state is shared and the session is weak: detaching a blocked stdin read cannot leave
+    // a thread with references to this stack frame after the loop exits.
+    std::thread reader([state, reader_session, cfg] {
         std::string line;
         while (std::getline(std::cin, line)) {
-            std::string cmd;
-            if (!json_get_string(line, "cmd", cmd)) {
-                SessionCmd c;
-                c.kind = SessionCmd::kError;
-                c.error = "command must contain a string cmd";
-                std::lock_guard<std::mutex> lk(mtx);
-                queue.push_back(std::move(c));
-                cv.notify_one();
-                continue;
-            }
-            if (cmd == "cancel") {
-                session->cancel();
-                continue;
-            }
+            if (state->stop.load(std::memory_order_acquire)) break;
             SessionCmd c;
             std::string parse_error;
-            if (!parse_session_line(line, cfg, c, parse_error)) {
+            if (!parse_session_command(line, cfg, c, parse_error)) {
                 c.kind = SessionCmd::kError;
                 c.error = std::move(parse_error);
             }
-            {
-                std::lock_guard<std::mutex> lk(mtx);
-                queue.push_back(std::move(c));
+            if (c.kind == SessionCmd::kCancel) {
+                if (std::shared_ptr<Session> live_session = reader_session.lock()) live_session->cancel();
+                continue;
             }
-            cv.notify_one();
+            {
+                std::lock_guard<std::mutex> lk(state->mutex);
+                if (state->stop.load(std::memory_order_relaxed)) break;
+                state->queue.push_back(std::move(c));
+            }
+            state->cv.notify_one();
         }
-        {
-            std::lock_guard<std::mutex> lk(mtx);
-            stop.store(true);
+        if (!state->stop.exchange(true, std::memory_order_acq_rel)) {
+            std::lock_guard<std::mutex> lk(state->mutex);
             SessionCmd close;
             close.kind = SessionCmd::kClose;
-            queue.push_back(std::move(close));
+            state->queue.push_back(std::move(close));
+            state->cv.notify_one();
         }
-        cv.notify_one();
     });
 
     int rc = 0;
     for (;;) {
         SessionCmd cmd;
         {
-            std::unique_lock<std::mutex> lk(mtx);
-            cv.wait(lk, [&] { return !queue.empty(); });
-            cmd = std::move(queue.front());
-            queue.pop_front();
+            std::unique_lock<std::mutex> lk(state->mutex);
+            state->cv.wait(lk, [&] { return !state->queue.empty(); });
+            cmd = std::move(state->queue.front());
+            state->queue.pop_front();
         }
         if (cmd.kind == SessionCmd::kClose) break;
         if (cmd.kind == SessionCmd::kError) {
@@ -571,18 +211,21 @@ static int run_session_loop(const RunConfig & cfg,
         GenerateRequest req;
         req.prompt = cmd.prompt;
         req.messages = std::move(cmd.messages);
+        req.chatml = cfg.chatml;
         if (!cfg.system_prompt.empty()) {
-            const bool has_system = std::any_of(req.messages.begin(), req.messages.end(), [](const ChatMessage & message) {
-                return message.role == "system";
-            });
+            const bool has_system = std::any_of(req.messages.begin(), req.messages.end(),
+                                                [](const ChatMessage & message) { return message.role == "system"; });
             if (!has_system) req.messages.insert(req.messages.begin(), {"system", cfg.system_prompt});
             if (req.messages.size() == 1) req.messages.push_back({"user", req.prompt});
         }
         req.n_predict = cmd.n_predict;
         req.think = cmd.think;
         req.reasoning_effort = std::move(cmd.reasoning_effort);
+        req.reasoning_budget_tokens = req.think ? cfg.reasoning_budget_tokens : -1;
         req.chat_template_kwargs = std::move(cmd.chat_template_kwargs);
-        req.clear_kv = cmd.clear_kv;
+        if (cfg.reasoning_preserve && !req.chat_template_kwargs.count("preserve_reasoning"))
+            req.chat_template_kwargs["preserve_reasoning"] = *cfg.reasoning_preserve ? "true" : "false";
+        req.clear_kv = cmd.clear_kv.value_or(!cfg.kv_preserve || !kv_preserve_started);
         req.render_text = true; // the line protocol carries the parsed answer on every token
 
         ProgressDelta pd; // fresh per generation: the first line extends the empty state
@@ -601,6 +244,7 @@ static int run_session_loop(const RunConfig & cfg,
             }
             continue;
         }
+        if (!r.cancelled) kv_preserve_started = true;
         const RunSummary & s = r.summary;
         std::printf("BMOE_DONE {\"id\":%d,\"cancelled\":%s,\"tokens\":%d,\"tok_s\":%.3f,\"prefill_s\":%.3f,"
                     "\"prefill_tps\":%.2f,\"load_s\":%.3f,\"cache_hit_pct\":%.1f,\"n_prompt\":%d,\"n_past\":%d,"
@@ -623,8 +267,9 @@ static int run_session_loop(const RunConfig & cfg,
         std::fflush(stdout);
     }
 
-    // Unblock the reader if it is still waiting on stdin (it exits on EOF; on an explicit close
-    // it has usually already returned). Detach so process exit is not held up by a blocking read.
+    state->stop.store(true, std::memory_order_release);
+    // std::getline cannot be interrupted portably; the detached reader owns only shared state and
+    // a weak session, so it cannot observe freed loop state when stdin eventually wakes it.
     if (reader.joinable()) reader.detach();
     return rc;
 }
@@ -646,6 +291,10 @@ static void print_usage(const char * argv0) {
         "usage: %s -m <model.gguf> [options]\n"
         "\n"
         "  -m, --model PATH        gguf model (required)\n"
+        "  -ot, --override-tensor PATTERN=BUFFER_TYPE[,..]\n"
+        "                          place matching fully resident tensors in a llama.cpp buffer;\n"
+        "                          incompatible with --moe-stream and never repacks the GGUF\n"
+        "      --list-buffer-types print available llama.cpp buffer types and exit\n"
         "  -mm, --mmproj PATH      multimodal projector gguf\n"
         "      --mmproj-offload    allow projector GPU offload (default)\n"
         "      --no-mmproj-offload keep projector on CPU\n"
@@ -670,6 +319,9 @@ static void print_usage(const char * argv0) {
         "      --system-prompt-file PATH read the system message from a file\n"
         "      --no-think          render the chat template with reasoning disabled\n"
         "      --reasoning-effort VALUE  template reasoning effort (low|medium|high|none)\n"
+        "      --reasoning-budget N      cap generated reasoning tokens (-1 is unrestricted)\n"
+        "      --reasoning-preserve      preserve reasoning in templates that support it\n"
+        "      --no-reasoning-preserve   disable reasoning preservation in those templates\n"
         "      --chat-template TEXT     override the model chat template\n"
         "      --chat-template-file PATH read a chat template from a file\n"
         "      --cache-type-k TYPE      KV key cache: f32,f16,bf16,q8_0,q5_0,q5_1,q4_0,q4_1,iq4_nl\n"
@@ -677,6 +329,7 @@ static void print_usage(const char * argv0) {
         "      --flash-attn MODE        Flash Attention: auto|on|off (default auto)\n"
         "      --progress          emit machine telemetry (one JSON line per token)\n"
         "      --session           keep the model loaded and serve JSON prompt requests from stdin\n"
+        "      --kv-preserve       keep the prior session KV; JSON clear_kv=true resets it\n"
         "      --csv PATH          also write per-token metrics as CSV\n"
         "      --route-trace PATH  diagnostics: write the per-step per-layer MoE routing trace\n"
         "                          (which experts each layer routed, their weight, cache state).\n"
@@ -886,6 +539,7 @@ int main(int argc, char ** argv) {
     bool chat_template_file_seen = false;
     bool no_think_seen = false;
     bool reasoning_effort_seen = false;
+    bool list_buffer_types = false;
     std::string system_prompt_file;
     std::string chat_template_file;
 
@@ -933,6 +587,14 @@ int main(int argc, char ** argv) {
             cfg.n_ubatch = std::atoi(next("--ubatch-size"));
         else if (a == "--n-expert-used")
             cfg.n_expert_used = std::atoi(next("--n-expert-used"));
+        else if (a == "-ot" || a == "--override-tensor") {
+            std::string error;
+            if (!parse_tensor_buffer_overrides(next("--override-tensor"), cfg.tensor_buffer_overrides, error)) {
+                std::fprintf(stderr, "bmoe: %s\n", error.c_str());
+                return 2;
+            }
+        } else if (a == "--list-buffer-types")
+            list_buffer_types = true;
         else if (a == "--temp")
             cfg.sampling.temp = (float) std::atof(next("--temp"));
         else if (a == "--top-k")
@@ -980,7 +642,13 @@ int main(int argc, char ** argv) {
                 return 2;
             }
             reasoning_effort_seen = true;
-        } else if (a == "--chat-template") {
+        } else if (a == "--reasoning-budget")
+            cfg.reasoning_budget_tokens = std::atoi(next("--reasoning-budget"));
+        else if (a == "--reasoning-preserve")
+            cfg.reasoning_preserve = true;
+        else if (a == "--no-reasoning-preserve")
+            cfg.reasoning_preserve = false;
+        else if (a == "--chat-template") {
             if (chat_template_file_seen) {
                 std::fprintf(stderr, "bmoe: --chat-template conflicts with --chat-template-file\n");
                 return 2;
@@ -1012,11 +680,12 @@ int main(int argc, char ** argv) {
         } else if (a == "--no-think") {
             cfg.think = false;
             no_think_seen = true;
-        }
-        else if (a == "--progress")
+        } else if (a == "--progress")
             cfg.progress = true;
         else if (a == "--session")
             session_mode = true;
+        else if (a == "--kv-preserve")
+            cfg.kv_preserve = true;
         else if (a == "--csv")
             csv_path = next("--csv");
         else if (a == "--route-trace")
@@ -1051,13 +720,13 @@ int main(int argc, char ** argv) {
         else if (a == "--dense-weights") {
             const std::string m = next("--dense-weights");
             if (m == "mmap")
-                cfg.moe.dense_weights = bmoe::DenseWeightsMode::Mmap;
+                cfg.moe.dense_weights = meitte::DenseWeightsMode::Mmap;
             else if (m == "warm")
-                cfg.moe.dense_weights = bmoe::DenseWeightsMode::Warmed;
+                cfg.moe.dense_weights = meitte::DenseWeightsMode::Warmed;
             else if (m == "anon")
-                cfg.moe.dense_weights = bmoe::DenseWeightsMode::Anonymous;
+                cfg.moe.dense_weights = meitte::DenseWeightsMode::Anonymous;
             else if (m == "ahwb")
-                cfg.moe.dense_weights = bmoe::DenseWeightsMode::Pinned;
+                cfg.moe.dense_weights = meitte::DenseWeightsMode::Pinned;
             else {
                 std::fprintf(stderr, "bmoe: --dense-weights expects mmap|warm|anon|ahwb, got '%s'\n", m.c_str());
                 return 2;
@@ -1066,9 +735,9 @@ int main(int argc, char ** argv) {
         // Deprecated aliases, kept so existing scripts and the app keep working: --no-warm-dense is
         // the Mmap policy, --dense-odirect is Anonymous. Prefer --dense-weights.
         else if (a == "--no-warm-dense")
-            cfg.moe.dense_weights = bmoe::DenseWeightsMode::Mmap;
+            cfg.moe.dense_weights = meitte::DenseWeightsMode::Mmap;
         else if (a == "--dense-odirect")
-            cfg.moe.dense_weights = bmoe::DenseWeightsMode::Anonymous;
+            cfg.moe.dense_weights = meitte::DenseWeightsMode::Anonymous;
         else if (a == "--load-all")
             cfg.moe.load_all = true;
         else if (a == "--force-cache")
@@ -1123,7 +792,7 @@ int main(int argc, char ** argv) {
             print_usage(argv[0]);
             return 0;
         } else if (a == "--version") {
-            std::printf("%s\n", bmoe::version());
+            std::printf("%s\n", meitte::version());
             return 0;
         } else {
             std::fprintf(stderr, "unknown arg: %s\n", a.c_str());
@@ -1150,6 +819,7 @@ int main(int argc, char ** argv) {
         std::fprintf(stderr, "bmoe: --no-think conflicts with --reasoning-effort %s\n", cfg.reasoning_effort.c_str());
         return 2;
     }
+    if (cfg.reasoning_budget_tokens >= 0) cfg.chatml = true;
     if (!cfg.system_prompt.empty() || !cfg.chat_template.empty()) cfg.chatml = true;
 
     // Env overrides (flag wins: only apply when the flag was not passed). Asking whether the flag
@@ -1172,6 +842,17 @@ int main(int argc, char ** argv) {
     if (cfg.moe.enabled && !cfg.moe.cache_auto && !seen.count("--cache-mb") && std::getenv("BMOE_CACHE_MB") == nullptr)
         cfg.moe.cache_auto = true;
 
+    if (list_buffer_types) {
+        const std::vector<std::string> types = Session::available_tensor_buffer_types();
+        if (types.empty()) {
+            std::fprintf(stderr, "bmoe: no llama.cpp buffer types are registered\n");
+            return 1;
+        }
+        for (const std::string & type : types)
+            std::printf("%s\n", type.c_str());
+        return 0;
+    }
+
     if (cfg.model_path.empty()) {
         print_usage(argv[0]);
         // Double-clicked: without this the window closes before the usage can be read, and the
@@ -1185,6 +866,10 @@ int main(int argc, char ** argv) {
     }
     if (session_mode && !cfg.media_paths.empty()) {
         std::fprintf(stderr, "bmoe: --image/--audio/--media are one-shot only and cannot be used with --session\n");
+        return 2;
+    }
+    if (cfg.kv_preserve && !session_mode) {
+        std::fprintf(stderr, "bmoe: --kv-preserve requires --session\n");
         return 2;
     }
 

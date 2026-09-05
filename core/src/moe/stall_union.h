@@ -3,7 +3,7 @@
 #include <chrono>
 #include <mutex>
 
-namespace bmoe {
+namespace meitte {
 
 // The interval-union state machine: the cumulative wall time during which at least one thread was
 // stalled, rather than the sum of per-thread stall times. enter/exit bracket each thread's stall;
@@ -97,4 +97,4 @@ private:
     StallUnionState state_;
 };
 
-} // namespace bmoe
+} // namespace meitte

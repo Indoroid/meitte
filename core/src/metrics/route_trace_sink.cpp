@@ -3,7 +3,7 @@
 #include <cmath>
 #include <cstdio>
 
-namespace bmoe {
+namespace meitte {
 
 namespace {
 
@@ -58,4 +58,4 @@ IRouteTraceSink * make_csv_route_trace_sink(const std::string & path) {
     return f ? new CsvRouteTraceSink(f) : nullptr;
 }
 
-} // namespace bmoe
+} // namespace meitte

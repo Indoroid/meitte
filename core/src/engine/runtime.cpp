@@ -4,7 +4,7 @@
 
 #include <string>
 
-namespace bmoe {
+namespace meitte {
 
 // n_ctx is passed through untouched so the gates run at exactly the context they specify.
 SessionConfig session_config_from(const RunConfig & cfg) {
@@ -19,6 +19,7 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.cache_type_k = cfg.cache_type_k;
     sc.cache_type_v = cfg.cache_type_v;
     sc.flash_attention = cfg.flash_attention;
+    sc.tensor_buffer_overrides = cfg.tensor_buffer_overrides;
     sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
     sc.compute_trace_layers = cfg.compute_trace_layers;
     sc.sampling = cfg.sampling; // greedy by default; opt-in stochastic decoding
@@ -45,18 +46,9 @@ RunResult run(const RunConfig & cfg,
         return r;
     }
 
-    const SessionConfig sc = session_config_from(cfg);
-
-    std::string error;
-    std::unique_ptr<Session> session = Session::open(sc, error, route_trace, compute_trace, io_trace);
-    if (!session) {
-        RunResult r;
-        r.error = error;
-        return r;
-    }
-
     GenerateRequest req;
     req.prompt = cfg.prompt;
+    req.chatml = cfg.chatml;
     for (const std::string & path : cfg.media_paths) {
         MediaInput input;
         std::string media_error;
@@ -67,9 +59,22 @@ RunResult run(const RunConfig & cfg,
         }
         req.media.push_back(std::move(input));
     }
+
+    const SessionConfig sc = session_config_from(cfg);
+    std::string error;
+    std::unique_ptr<Session> session = Session::open(sc, error, route_trace, compute_trace, io_trace);
+    if (!session) {
+        RunResult r;
+        r.error = error;
+        return r;
+    }
+
     req.n_predict = cfg.n_predict;
     req.think = cfg.think;
     req.reasoning_effort = cfg.reasoning_effort;
+    req.reasoning_budget_tokens = cfg.think ? cfg.reasoning_budget_tokens : -1;
+    if (cfg.reasoning_preserve)
+        req.chat_template_kwargs["preserve_reasoning"] = *cfg.reasoning_preserve ? "true" : "false";
     if (!cfg.system_prompt.empty()) {
         req.chatml = true;
         req.messages = {{"system", cfg.system_prompt}, {"user", cfg.prompt}};
@@ -83,4 +88,4 @@ RunResult run(const RunConfig & cfg,
     return session->generate(req, on_token, sink);
 }
 
-} // namespace bmoe
+} // namespace meitte

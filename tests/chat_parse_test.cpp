@@ -4,7 +4,7 @@
 // convenience constructor copies only format/generation_prompt and leaves the PEG grammar
 // arena empty. `common_chat_parse` then throws on the first token, a catch swallows it, and
 // the raw stream — reasoning markers and all — is shown verbatim. The fix loads the grammar
-// (`parser.load(cp.parser)`), extracted into bmoe::detail::build_parse_params.
+// (`parser.load(cp.parser)`), extracted into meitte::detail::build_parse_params.
 //
 // This exercises that exact function against a Qwen3-style template, with no model: the whole
 // point is that the wiring is testable without a gguf. Assertions are explicit (not <cassert>)
@@ -108,7 +108,7 @@ int main() {
     expect_true("template yields a non-empty parser grammar", !cp.parser.empty());
 
     // Positive: the production wiring loads the grammar and strips the reasoning block.
-    common_chat_parser_params good = bmoe::detail::build_parse_params(cp);
+    common_chat_parser_params good = meitte::detail::build_parse_params(cp);
     common_chat_msg parsed;
     bool threw = false;
     try {

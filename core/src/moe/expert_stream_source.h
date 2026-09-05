@@ -35,7 +35,7 @@
 
 struct ggml_tensor;
 
-namespace bmoe {
+namespace meitte {
 
 // One expert weight tensor to rebind, with where its data lives in the gguf.
 struct ExpertTensorRef {
@@ -373,4 +373,4 @@ private:
     bool hook_registered_ = false;
 };
 
-} // namespace bmoe
+} // namespace meitte

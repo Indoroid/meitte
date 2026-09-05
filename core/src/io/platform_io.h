@@ -19,7 +19,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace bmoe::pio {
+namespace meitte::pio {
 
 #if defined(_WIN32)
 using fd_t = void *; // HANDLE
@@ -182,4 +182,4 @@ struct DeviceMemory {
 };
 bool device_memory(DeviceMemory * out);
 
-} // namespace bmoe::pio
+} // namespace meitte::pio

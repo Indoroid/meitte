@@ -40,7 +40,7 @@
 
 struct ggml_tensor;
 
-namespace bmoe {
+namespace meitte {
 
 class RowStream final : public IRowSource {
 public:
@@ -126,4 +126,4 @@ private:
     std::atomic<uint64_t> io_errors_{0};
 };
 
-} // namespace bmoe
+} // namespace meitte

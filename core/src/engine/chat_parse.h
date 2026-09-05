@@ -10,7 +10,7 @@
 
 #include <string>
 
-namespace bmoe::detail {
+namespace meitte::detail {
 
 // Build reasoning-parser params from an applied chat template.
 //
@@ -25,4 +25,4 @@ common_chat_parser_params build_parse_params(const common_chat_params & cp);
 // invisible; the next wiring regression should be noticed.
 void warn_parse_failed_once(const char * what);
 
-} // namespace bmoe::detail
+} // namespace meitte::detail

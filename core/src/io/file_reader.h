@@ -25,7 +25,7 @@
 #include <string>
 #include <vector>
 
-namespace bmoe {
+namespace meitte {
 
 class FileReader {
 public:
@@ -76,4 +76,4 @@ private:
     std::atomic<long long> syscall_ns_{0};
 };
 
-} // namespace bmoe
+} // namespace meitte

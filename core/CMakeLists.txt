@@ -28,6 +28,7 @@ if(BMOE_HAVE_LLAMA)
         src/moe/gguf_offsets.cpp
         src/moe/expert_stream_source.cpp
         src/moe/router_hook.cpp
+        src/engine/tensor_overrides.cpp
         src/engine/session.cpp
         src/engine/chat_parse.cpp
         src/engine/thinking_control.cpp

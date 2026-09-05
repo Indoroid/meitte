@@ -4,7 +4,7 @@
 #include <exception>
 #include <string>
 
-namespace bmoe {
+namespace meitte {
 
 const char * think_control_name(ThinkControl c) {
     switch (c) {
@@ -18,9 +18,9 @@ const char * think_control_name(ThinkControl c) {
     return "template";
 }
 
-} // namespace bmoe
+} // namespace meitte
 
-namespace bmoe::detail {
+namespace meitte::detail {
 
 namespace {
 
@@ -118,4 +118,4 @@ ThinkControl probe_think_control(const common_chat_templates * tmpls) {
     }
 }
 
-} // namespace bmoe::detail
+} // namespace meitte::detail

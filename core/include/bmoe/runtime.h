@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-namespace bmoe {
+namespace meitte {
 
 class IRouteTraceSink;
 class IComputeTraceSink;
@@ -54,4 +54,4 @@ RunResult run(const RunConfig & cfg,
               IComputeTraceSink * compute_trace = nullptr,
               IIoTraceSink * io_trace = nullptr);
 
-} // namespace bmoe
+} // namespace meitte

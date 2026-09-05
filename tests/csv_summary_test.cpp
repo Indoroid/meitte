@@ -14,7 +14,7 @@
 #include <fstream>
 #include <string>
 
-using namespace bmoe;
+using namespace meitte;
 
 static int failures = 0;
 

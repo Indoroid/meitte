@@ -52,10 +52,11 @@ int main() {
 
     ApiCompletionRequest controls;
     error.clear();
-    check(parse_completion_request(
-              R"({"messages":[{"role":"user","content":"x"}],"reasoning_effort":"HIGH","reasoning_budget_tokens":32,"chat_template_kwargs":{"mode":"fast","flag":true,"count":7}})",
-              true, defaults, 128, controls, error),
-          "reasoning controls and generic kwargs parse");
+    check(
+        parse_completion_request(
+            R"({"messages":[{"role":"user","content":"x"}],"reasoning_effort":"HIGH","reasoning_budget_tokens":32,"chat_template_kwargs":{"mode":"fast","flag":true,"count":7}})",
+            true, defaults, 128, controls, error),
+        "reasoning controls and generic kwargs parse");
     check(!controls.think.has_value() && controls.reasoning_effort == "high",
           "reasoning effort implies request-local enablement");
     check(controls.reasoning_effort == "high", "standard reasoning effort names normalize to lowercase");
@@ -66,45 +67,53 @@ int main() {
           "generic kwargs preserve JSON literals");
 
     error.clear();
+    check(parse_completion_request(R"({"messages":[{"role":"user","content":"x"}],"clear_kv":false})", true,
+                                   defaults, 128, controls, error) &&
+              controls.clear_kv && !*controls.clear_kv,
+          "clear_kv=false requests an incremental server turn");
+
+    error.clear();
     check(parse_completion_request(
-              R"({"messages":[{"role":"user","content":"x"}],"think":false,"reasoning_effort":"high"})",
-              true, defaults, 128, controls, error),
+              R"({"messages":[{"role":"user","content":"x"}],"think":false,"reasoning_effort":"high"})", true, defaults,
+              128, controls, error),
           "explicit thinking off accepts and clears effort");
     check(controls.think.has_value() && !*controls.think && controls.reasoning_effort.empty(),
           "explicit thinking off wins over effort");
 
     error.clear();
-    check(!parse_completion_request(
-              R"({"messages":[{"role":"user","content":"x"}],"think":true,"chat_template_kwargs":{"enable_thinking":false}})",
-              true, defaults, 128, controls, error),
-          "conflicting typed and generic thinking controls are rejected");
+    check(
+        !parse_completion_request(
+            R"({"messages":[{"role":"user","content":"x"}],"think":true,"chat_template_kwargs":{"enable_thinking":false}})",
+            true, defaults, 128, controls, error),
+        "conflicting typed and generic thinking controls are rejected");
     error.clear();
-    check(!parse_completion_request(
-              R"({"messages":[{"role":"user","content":"x"}],"chat_template_kwargs":[]})",
-              true, defaults, 128, controls, error),
+    check(!parse_completion_request(R"({"messages":[{"role":"user","content":"x"}],"chat_template_kwargs":[]})", true,
+                                    defaults, 128, controls, error),
           "non-object generic kwargs are rejected");
     error.clear();
     check(!parse_completion_request(
-              R"({"messages":[{"role":"user","content":"x"}],"chat_template_kwargs":{"reasoning_effort":""}})",
-              true, defaults, 128, controls, error),
+              R"({"messages":[{"role":"user","content":"x"}],"chat_template_kwargs":{"reasoning_effort":""}})", true,
+              defaults, 128, controls, error),
           "empty generic reasoning effort is rejected");
     error.clear();
-    check(parse_completion_request(
-              R"({"messages":[{"role":"user","content":"x"}],"thinking_budget_tokens":0})",
-              true, defaults, 128, controls, error),
+    check(parse_completion_request(R"({"messages":[{"role":"user","content":"x"}],"thinking_budget_tokens":0})", true,
+                                   defaults, 128, controls, error),
           "reasoning budget alias parses");
     check(controls.reasoning_budget_tokens && *controls.reasoning_budget_tokens == 0,
           "zero ends reasoning immediately");
     error.clear();
-    check(!parse_completion_request(
-              R"({"messages":[{"role":"user","content":"x"}],"reasoning_budget_tokens":-2})",
-              true, defaults, 128, controls, error),
+    check(!parse_completion_request(R"({"messages":[{"role":"user","content":"x"}],"reasoning_budget_tokens":-2})",
+                                    true, defaults, 128, controls, error),
           "invalid negative reasoning budget is rejected");
     error.clear();
     check(!parse_completion_request(
               R"({"messages":[{"role":"user","content":"x"}],"reasoning_budget_tokens":3,"thinking_budget_tokens":4})",
               true, defaults, 128, controls, error),
           "conflicting reasoning budget aliases are rejected");
+    error.clear();
+    check(!parse_completion_request(R"({"messages":[{"role":"user","content":"x"}],"clear_kv":"no"})", true,
+                                    defaults, 128, controls, error),
+          "non-boolean clear_kv is rejected");
 
     ApiCompletionRequest default_length;
     error.clear();
@@ -193,6 +202,10 @@ int main() {
     check(!parse_completion_request(R"({"prompt":"x","stream_options":{"include_usage":"yes"}})", false, defaults, 128,
                                     invalid, error),
           "non-boolean stream usage option is rejected");
+    error.clear();
+    check(!parse_completion_request(R"({"messages":[{"role":"user","content":"x","reasoning_content":7}]})", true,
+                                    defaults, 128, invalid, error),
+          "wrong message-field types are rejected without throwing");
 
     RunResult usage_result;
     usage_result.summary.n_prompt = 3;

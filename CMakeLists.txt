@@ -62,7 +62,7 @@ endif()
 
 add_subdirectory(core)
 
-if(BMOE_BUILD_CLI AND BMOE_HAVE_LLAMA)
+if((BMOE_BUILD_CLI OR BMOE_BUILD_TESTS) AND BMOE_HAVE_LLAMA)
     add_subdirectory(cli)
 endif()
 

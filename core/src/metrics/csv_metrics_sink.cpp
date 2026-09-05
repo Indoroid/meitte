@@ -2,7 +2,7 @@
 
 #include <cstdio>
 
-namespace bmoe {
+namespace meitte {
 
 namespace {
 
@@ -140,4 +140,4 @@ IMetricsSink * make_csv_metrics_sink(const std::string & path) {
     return f ? new CsvMetricsSink(f) : nullptr;
 }
 
-} // namespace bmoe
+} // namespace meitte

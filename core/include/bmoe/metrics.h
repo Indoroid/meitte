@@ -12,7 +12,7 @@
 #include <string>
 #include <vector>
 
-namespace bmoe {
+namespace meitte {
 
 struct TokenMetrics {
     int step = 0;            // 1-based index of this token
@@ -368,4 +368,4 @@ public:
 // Returns nullptr if the file cannot be opened.
 IMetricsSink * make_csv_metrics_sink(const std::string & path);
 
-} // namespace bmoe
+} // namespace meitte

@@ -48,9 +48,10 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 
-using namespace bmoe;
+using namespace meitte;
 using json = nlohmann::json;
 
 // ── Socket helpers ───────────────────────────────────────────────────────────
@@ -74,9 +75,8 @@ static bool read_text_file(const std::string & path, std::string & out, std::str
 
 static std::string normalize_reasoning_effort(std::string value) {
     std::string lower = value;
-    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     if (lower == "low" || lower == "medium" || lower == "high" || lower == "none") return lower;
     return value;
 }
@@ -348,6 +348,7 @@ struct ApiCompletionRequest {
     std::optional<bool> think;
     std::string reasoning_effort;
     std::optional<int> reasoning_budget_tokens;
+    std::optional<bool> clear_kv;
     std::map<std::string, std::string> chat_template_kwargs;
 };
 
@@ -374,7 +375,8 @@ static bool decode_base64_media(const std::string & encoded,
         return false;
     }
     size_t total = decoded.size();
-    for (const MediaInput & existing : media) total += existing.bytes.size();
+    for (const MediaInput & existing : media)
+        total += existing.bytes.size();
     if (total > k_max_media_total_bytes) {
         error = "decoded media payloads exceed 64 MiB total";
         return false;
@@ -388,9 +390,7 @@ static bool decode_base64_media(const std::string & encoded,
     return true;
 }
 
-static bool decode_data_url(const std::string & url,
-                            std::vector<MediaInput> & media,
-                            std::string & error) {
+static bool decode_data_url(const std::string & url, std::vector<MediaInput> & media, std::string & error) {
     if (url.rfind("data:", 0) != 0) {
         error = "remote image URLs are not supported; send image_url.url as a data:...;base64 URL";
         return false;
@@ -408,10 +408,8 @@ static bool decode_data_url(const std::string & url,
     return decode_base64_media(url.substr(comma + 1), meta, media, error);
 }
 
-static bool parse_message_content(const json & value,
-                                  ChatMessage & message,
-                                  std::vector<MediaInput> & media,
-                                  std::string & error) {
+static bool
+parse_message_content(const json & value, ChatMessage & message, std::vector<MediaInput> & media, std::string & error) {
     message.content.clear();
     message.content_parts.clear();
     if (value.is_null()) return true;
@@ -451,12 +449,12 @@ static bool parse_message_content(const json & value,
             std::string url;
             if (part.contains("image_url")) {
                 const json & image_url = part["image_url"];
-                if (image_url.is_string()) url = image_url.get<std::string>();
+                if (image_url.is_string())
+                    url = image_url.get<std::string>();
                 else if (image_url.is_object() && image_url.contains("url") && image_url["url"].is_string())
                     url = image_url["url"].get<std::string>();
             }
-            if (url.empty() && part.contains("url") && part["url"].is_string())
-                url = part["url"].get<std::string>();
+            if (url.empty() && part.contains("url") && part["url"].is_string()) url = part["url"].get<std::string>();
             if (url.empty()) {
                 error = type + " content part needs image_url.url (or url)";
                 return false;
@@ -472,9 +470,12 @@ static bool parse_message_content(const json & value,
 
         if (type == "input_audio" || type == "audio") {
             const json * audio = nullptr;
-            if (part.contains("input_audio") && part["input_audio"].is_object()) audio = &part["input_audio"];
-            else if (part.contains("audio") && part["audio"].is_object()) audio = &part["audio"];
-            else if (part.contains("data")) audio = &part;
+            if (part.contains("input_audio") && part["input_audio"].is_object())
+                audio = &part["input_audio"];
+            else if (part.contains("audio") && part["audio"].is_object())
+                audio = &part["audio"];
+            else if (part.contains("data"))
+                audio = &part;
             if (!audio || !audio->contains("data") || !(*audio)["data"].is_string()) {
                 error = type + " content part needs base64 audio data";
                 return false;
@@ -553,12 +554,12 @@ static bool parse_chat_template_kwargs(const json & value, ApiCompletionRequest 
     return true;
 }
 
-static bool parse_completion_request(const std::string & body,
-                                     bool chat,
-                                     const SamplingConfig & defaults,
-                                     int default_n_predict,
-                                     ApiCompletionRequest & out,
-                                     std::string & error) {
+static bool parse_completion_request_impl(const std::string & body,
+                                          bool chat,
+                                          const SamplingConfig & defaults,
+                                          int default_n_predict,
+                                          ApiCompletionRequest & out,
+                                          std::string & error) {
     json root = json::parse(body, nullptr, /*allow_exceptions*/ false);
     if (root.is_discarded() || !root.is_object()) {
         error = "Request body must be a JSON object";
@@ -594,8 +595,7 @@ static bool parse_completion_request(const std::string & body,
         const json & value = root[name];
         if (!value.is_number_integer() || value.get<long long>() < -1 ||
             value.get<long long>() > std::numeric_limits<int>::max()) {
-            error = std::string(name) + " must be an integer in -1.." +
-                    std::to_string(std::numeric_limits<int>::max());
+            error = std::string(name) + " must be an integer in -1.." + std::to_string(std::numeric_limits<int>::max());
             return false;
         }
         const int budget = value.get<int>();
@@ -605,8 +605,14 @@ static bool parse_completion_request(const std::string & body,
         }
         out.reasoning_budget_tokens = budget;
     }
-    if (root.contains("chat_template_kwargs") &&
-        !parse_chat_template_kwargs(root["chat_template_kwargs"], out, error))
+    if (root.contains("clear_kv")) {
+        if (!root["clear_kv"].is_boolean()) {
+            error = "clear_kv must be a boolean";
+            return false;
+        }
+        out.clear_kv = root["clear_kv"].get<bool>();
+    }
+    if (root.contains("chat_template_kwargs") && !parse_chat_template_kwargs(root["chat_template_kwargs"], out, error))
         return false;
     if (out.reasoning_effort == "none") {
         out.think = false;
@@ -670,10 +676,9 @@ static bool parse_completion_request(const std::string & body,
             out.prompt = it->content; // raw text fallback if this model has no chat template
             have_user_input = !it->content.empty();
             if (!have_user_input) {
-                have_user_input = std::any_of(it->content_parts.begin(), it->content_parts.end(),
-                                              [](const ChatContentPart & part) {
-                                                  return part.kind == ChatContentKind::Media;
-                                              });
+                have_user_input =
+                    std::any_of(it->content_parts.begin(), it->content_parts.end(),
+                                [](const ChatContentPart & part) { return part.kind == ChatContentKind::Media; });
             }
             break;
         }
@@ -799,6 +804,20 @@ static bool parse_completion_request(const std::string & body,
     return true;
 }
 
+static bool parse_completion_request(const std::string & body,
+                                     bool chat,
+                                     const SamplingConfig & defaults,
+                                     int default_n_predict,
+                                     ApiCompletionRequest & out,
+                                     std::string & error) {
+    try {
+        return parse_completion_request_impl(body, chat, defaults, default_n_predict, out, error);
+    } catch (const json::exception &) {
+        error = "request contains a field with an invalid type";
+        return false;
+    }
+}
+
 // ── HTTP primitives ──────────────────────────────────────────────────────────
 
 struct HttpRequest {
@@ -871,16 +890,18 @@ static bool parse_http_request(const std::string & raw, HttpRequest & req) {
 }
 
 // Write all bytes to a socket.
-static void http_write(int fd, const std::string & s) {
+static bool http_write(int fd, const std::string & s) {
     size_t off = 0;
     while (off < s.size()) {
         ssize_t n = write(fd, s.data() + off, s.size() - off);
         if (n < 0) {
             if (errno == EINTR) continue;
-            return;
+            return false;
         }
+        if (n == 0) return false;
         off += (size_t) n;
     }
+    return true;
 }
 
 // Send a complete HTTP response.
@@ -906,7 +927,7 @@ static void send_response(int fd,
 }
 
 // Send SSE response headers (no Content-Length — streamed body).
-static void send_sse_headers(int fd) {
+static bool send_sse_headers(int fd) {
     // OpenAI-compatible SDKs (OpenAI/JS, OpenAI/Python) use fetch() and expect
     // Transfer-Encoding: chunked for streaming. Connection: close without
     // chunked encoding causes the SDK to read the entire body before parsing,
@@ -920,23 +941,20 @@ static void send_sse_headers(int fd) {
                        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
                        "Access-Control-Allow-Headers: Content-Type, Authorization\r\n"
                        "\r\n";
-    http_write(fd, resp);
+    return http_write(fd, resp);
 }
 
 // Send an SSE data chunk with proper HTTP chunked transfer encoding.
-static void send_sse(int fd, const std::string & data) {
+static bool send_sse(int fd, const std::string & data) {
     std::string chunk = "data: " + data + "\n\n";
     char size_buf[16];
     std::snprintf(size_buf, sizeof(size_buf), "%zx\r\n", chunk.size());
-    http_write(fd, size_buf);
-    http_write(fd, chunk);
-    http_write(fd, "\r\n");
+    return http_write(fd, size_buf) && http_write(fd, chunk) && http_write(fd, "\r\n");
 }
 
 // Send the terminating zero-size chunk.
-static void send_sse_done(int fd) {
-    send_sse(fd, "[DONE]");
-    http_write(fd, "0\r\n\r\n");
+static bool send_sse_done(int fd) {
+    return send_sse(fd, "[DONE]") && http_write(fd, "0\r\n\r\n");
 }
 
 static void send_json_error(int fd, int status, const char * msg, bool ka) {
@@ -960,8 +978,11 @@ struct ServerConfig {
     int max_request_mb = 64;
     bool default_think = true;
     std::string default_reasoning_effort;
+    int default_reasoning_budget_tokens = -1;
+    std::optional<bool> default_reasoning_preserve;
     std::string default_system_prompt;
     bool completion_chatml = false;
+    bool kv_preserve = false;
     bool progress = true;
 };
 
@@ -971,6 +992,7 @@ struct ServerState {
     ServerConfig srv_cfg;
     IMetricsSink * metrics = nullptr;
     int default_n_predict = 128;
+    bool kv_preserve_started = false;
     std::atomic<bool> running{true};
 };
 
@@ -1157,27 +1179,35 @@ static void handle_completions(int fd, const HttpRequest & req, ServerState & st
     greq.prompt = std::move(api.prompt);
     greq.messages = std::move(api.messages);
     greq.media = std::move(api.media);
-    if (chat && !state.srv_cfg.default_system_prompt.empty()) {
-        const bool has_system = std::any_of(greq.messages.begin(), greq.messages.end(), [](const ChatMessage & message) {
-            return message.role == "system";
-        });
+    greq.tools = std::move(api.tools);
+    greq.clear_kv = api.clear_kv.value_or(!state.srv_cfg.kv_preserve || !state.kv_preserve_started);
+    const bool incremental_chat = !greq.clear_kv && chat && greq.media.empty() && greq.tools.empty() &&
+                                  greq.messages.size() == 1 && greq.messages.front().role == "user";
+    if (incremental_chat) {
+        greq.messages.clear();
+    } else if (chat && !state.srv_cfg.default_system_prompt.empty()) {
+        const bool has_system = std::any_of(greq.messages.begin(), greq.messages.end(),
+                                            [](const ChatMessage & message) { return message.role == "system"; });
         if (!has_system) greq.messages.insert(greq.messages.begin(), {"system", state.srv_cfg.default_system_prompt});
     }
-    greq.tools = std::move(api.tools);
     greq.tool_choice = api.tool_choice;
     greq.parallel_tool_calls = api.parallel_tool_calls;
-    greq.chatml = chat || state.srv_cfg.completion_chatml;
+    greq.chatml = chat || state.srv_cfg.completion_chatml || state.srv_cfg.kv_preserve;
     greq.n_predict = api.n_predict;
     // Chat SSE needs parser-confirmed text so tool-call markup never leaks into normal content.
     // ponytail: reparses cumulative chat text per token; an incremental parser is the upgrade path
     // if HTTP generation throughput makes this measurable.
     greq.render_text = state.srv_cfg.progress || (chat && api.stream);
     greq.think = api.think.value_or(!api.reasoning_effort.empty() ? true : state.srv_cfg.default_think);
-    greq.reasoning_effort = api.reasoning_effort.empty() ? state.srv_cfg.default_reasoning_effort
-                                                          : api.reasoning_effort;
+    greq.reasoning_effort =
+        api.reasoning_effort.empty() ? state.srv_cfg.default_reasoning_effort : api.reasoning_effort;
     if (!greq.think) greq.reasoning_effort.clear();
-    greq.reasoning_budget_tokens = greq.think ? api.reasoning_budget_tokens.value_or(-1) : -1;
+    greq.reasoning_budget_tokens =
+        greq.think ? api.reasoning_budget_tokens.value_or(state.srv_cfg.default_reasoning_budget_tokens) : -1;
     greq.chat_template_kwargs = std::move(api.chat_template_kwargs);
+    if (state.srv_cfg.default_reasoning_preserve && !greq.chat_template_kwargs.count("preserve_reasoning"))
+        greq.chat_template_kwargs["preserve_reasoning"] =
+            *state.srv_cfg.default_reasoning_preserve ? "true" : "false";
     greq.override_sampling = true;
     greq.sampling = api.sampling;
     long created = static_cast<long>(std::time(nullptr));
@@ -1197,6 +1227,7 @@ static void handle_completions(int fd, const HttpRequest & req, ServerState & st
             send_json_error(fd, 500, result.error.c_str(), false);
             return;
         }
+        if (state.srv_cfg.kv_preserve && !result.cancelled) state.kv_preserve_started = true;
 
         std::string id_prefix = chat ? "chatcmpl" : "cmpl";
         std::string object = chat ? "chat.completion" : "text_completion";
@@ -1238,7 +1269,7 @@ static void handle_completions(int fd, const HttpRequest & req, ServerState & st
     }
 
     // ── Streaming (SSE) ─────────────────────────────────────────────────
-    send_sse_headers(fd);
+    if (!send_sse_headers(fd)) return;
 
     std::string id_prefix = chat ? "chatcmpl" : "cmpl";
     std::string object = chat ? "chat.completion.chunk" : "text_completion";
@@ -1249,30 +1280,34 @@ static void handle_completions(int fd, const HttpRequest & req, ServerState & st
                              {"delta", {{"role", "assistant"}, {"content", ""}}},
                              {"finish_reason", nullptr},
                              {"logprobs", nullptr}};
-        send_sse(fd, make_stream_response(id_prefix + "-" + request_tag, object, created, response_model,
-                                          json::array({choice}), api.stream_include_usage)
-                         .dump(-1, ' ', false, json::error_handler_t::replace));
+        if (!send_sse(fd, make_stream_response(id_prefix + "-" + request_tag, object, created, response_model,
+                                               json::array({choice}), api.stream_include_usage)
+                              .dump(-1, ' ', false, json::error_handler_t::replace)))
+            return;
     }
 
     StreamTextState streamed_text;
     auto on_token = [&](const TokenMetrics & m) {
         progress_token(m);
         if (!chat) {
-            send_sse(fd, make_stream_delta(false, id_prefix + "-" + request_tag, object, created, response_model,
-                                           m.piece, {}, api.stream_include_usage));
+            if (!send_sse(fd, make_stream_delta(false, id_prefix + "-" + request_tag, object, created, response_model,
+                                                m.piece, {}, api.stream_include_usage)))
+                state.session->cancel();
             return;
         }
         json delta = json::object();
         add_stream_text_delta(delta, m, streamed_text);
         if (!delta.empty()) {
-            send_sse(fd, make_stream_delta(true, id_prefix + "-" + request_tag, object, created, response_model,
-                                           delta.value("content", ""), delta.value("reasoning_content", ""),
-                                           api.stream_include_usage));
+            if (!send_sse(fd, make_stream_delta(true, id_prefix + "-" + request_tag, object, created, response_model,
+                                                delta.value("content", ""), delta.value("reasoning_content", ""),
+                                                api.stream_include_usage)))
+                state.session->cancel();
         }
     };
 
     auto result = state.session->generate(greq, on_token, state.metrics);
     if (result) {
+        if (state.srv_cfg.kv_preserve && !result.cancelled) state.kv_preserve_started = true;
         if (chat) {
             json delta = json::object();
             const std::string text = stream_suffix(result.generated_text, streamed_text.text);
@@ -1367,8 +1402,7 @@ static bool read_request(int fd, std::string & raw, size_t max_body_bytes) {
                     const unsigned long long parsed = std::strtoull(begin, &end, 10);
                     while (end && *end == ' ')
                         ++end;
-                    if (errno != 0 || end == begin || (end && *end != '\0') || parsed > max_body_bytes)
-                        return false;
+                    if (errno != 0 || end == begin || (end && *end != '\0') || parsed > max_body_bytes) return false;
                     content_length = (size_t) parsed;
                     have_length = true;
                     break;
@@ -1385,6 +1419,9 @@ static bool read_request(int fd, std::string & raw, size_t max_body_bytes) {
 // Process one HTTP request per connection. The model/cache remain resident; only the cheap socket
 // is short-lived. This also avoids dropping a pipelined request after the first parsed body.
 static void process_connection(int fd, ServerState & state) {
+    const timeval timeout{30, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
     std::string raw;
     if (!read_request(fd, raw, static_cast<size_t>(state.srv_cfg.max_request_mb) * 1024ull * 1024ull))
         return; // connection closed or request exceeded configured body cap
@@ -1405,6 +1442,10 @@ static void print_usage(const char * argv0) {
     std::printf("usage: %s -m <model.gguf> [options]\n"
                 "\n"
                 "  -m, --model PATH        gguf model (required)\n"
+                "  -ot, --override-tensor PATTERN=BUFFER_TYPE[,..]\n"
+                "                          place matching fully resident tensors in a llama.cpp buffer;\n"
+                "                          incompatible with --moe-stream and never repacks the GGUF\n"
+                "      --list-buffer-types print available llama.cpp buffer types and exit\n"
                 "  -mm, --mmproj PATH      multimodal projector gguf\n"
                 "      --mmproj-offload     offload projector to GPU when supported (default)\n"
                 "      --no-mmproj-offload  keep projector on CPU\n"
@@ -1430,6 +1471,10 @@ static void print_usage(const char * argv0) {
                 "      --system-prompt-file PATH read the default system message from a file\n"
                 "      --no-think          disable reasoning through model template controls\n"
                 "      --reasoning-effort VALUE  default low|medium|high|none reasoning effort\n"
+                "      --reasoning-budget N default cap for generated reasoning tokens\n"
+                "      --reasoning-preserve preserve reasoning in supporting templates\n"
+                "      --no-reasoning-preserve disable reasoning preservation in supporting templates\n"
+                "      --kv-preserve       retain one incremental chat KV; JSON clear_kv=true resets it\n"
                 "      --chat-template TEXT override the model-provided chat template\n"
                 "      --chat-template-file PATH read the chat-template override from a file\n"
                 "      --cache-type-k TYPE  KV key type: f32,f16,bf16,q8_0,q5_0,q5_1,q4_0,q4_1,iq4_nl\n"
@@ -1520,6 +1565,7 @@ int main(int argc, char ** argv) {
     std::string io_trace_path;
     bool no_think_seen = false;
     bool reasoning_effort_seen = false;
+    bool list_buffer_types = false;
     bool system_prompt_seen = false;
     bool system_prompt_file_seen = false;
     std::string system_prompt_file;
@@ -1574,6 +1620,14 @@ int main(int argc, char ** argv) {
             cfg.n_ubatch = std::atoi(next("--ubatch-size"));
         else if (a == "--n-expert-used")
             cfg.n_expert_used = std::atoi(next("--n-expert-used"));
+        else if (a == "-ot" || a == "--override-tensor") {
+            std::string error;
+            if (!parse_tensor_buffer_overrides(next("--override-tensor"), cfg.tensor_buffer_overrides, error)) {
+                std::fprintf(stderr, "bmoe-server: %s\n", error.c_str());
+                return 2;
+            }
+        } else if (a == "--list-buffer-types")
+            list_buffer_types = true;
         else if (a == "--temp")
             cfg.sampling.temp = (float) std::atof(next("--temp"));
         else if (a == "--top-k")
@@ -1611,15 +1665,22 @@ int main(int argc, char ** argv) {
             }
             system_prompt_file = next("--system-prompt-file");
             system_prompt_file_seen = true;
-        }
-        else if (a == "--reasoning-effort") {
+        } else if (a == "--reasoning-effort") {
             cfg.reasoning_effort = next("--reasoning-effort");
             if (cfg.reasoning_effort.empty()) {
                 std::fprintf(stderr, "bmoe-server: --reasoning-effort cannot be empty\n");
                 return 2;
             }
             reasoning_effort_seen = true;
-        } else if (a == "--chat-template") {
+        } else if (a == "--reasoning-budget")
+            cfg.reasoning_budget_tokens = std::atoi(next("--reasoning-budget"));
+        else if (a == "--reasoning-preserve")
+            cfg.reasoning_preserve = true;
+        else if (a == "--no-reasoning-preserve")
+            cfg.reasoning_preserve = false;
+        else if (a == "--kv-preserve")
+            srv.kv_preserve = true;
+        else if (a == "--chat-template") {
             if (chat_template_file_seen) {
                 std::fprintf(stderr, "bmoe-server: --chat-template conflicts with --chat-template-file\n");
                 return 2;
@@ -1648,8 +1709,7 @@ int main(int argc, char ** argv) {
                 std::fprintf(stderr, "bmoe-server: --flash-attn expects auto|on|off\n");
                 return 2;
             }
-        }
-        else if (a == "--progress")
+        } else if (a == "--progress")
             srv.progress = true;
         else if (a == "--session") {
             // A server is intrinsically a persistent session; accept the CLI flag for exact parser
@@ -1745,7 +1805,7 @@ int main(int argc, char ** argv) {
             print_usage(argv[0]);
             return 0;
         } else if (a == "--version") {
-            std::printf("%s\n", bmoe::version());
+            std::printf("%s\n", meitte::version());
             return 0;
         } else {
             std::fprintf(stderr, "bmoe-server: unknown arg: %s\n", a.c_str());
@@ -1773,8 +1833,11 @@ int main(int argc, char ** argv) {
                      cfg.reasoning_effort.c_str());
         return 2;
     }
+    if (cfg.reasoning_budget_tokens >= 0) srv.completion_chatml = true;
     srv.default_think = cfg.think;
     srv.default_reasoning_effort = cfg.reasoning_effort;
+    srv.default_reasoning_budget_tokens = cfg.reasoning_budget_tokens;
+    srv.default_reasoning_preserve = cfg.reasoning_preserve;
     srv.default_system_prompt = cfg.system_prompt;
 
     // Env overrides
@@ -1802,6 +1865,20 @@ int main(int argc, char ** argv) {
     if (!seen.count("--predict-log")) cfg.moe.predict_log = env_int("BMOE_PREDICT_LOG", 0) != 0;
     if (!seen.count("--predict-prefetch")) cfg.moe.predict_prefetch = env_int("BMOE_PREDICT_PREFETCH", 0) != 0;
     if (!seen.count("--max-request-mb")) srv.max_request_mb = env_int("BMOE_MAX_REQUEST_MB", 64);
+
+    if (cfg.moe.enabled && !cfg.moe.cache_auto && !seen.count("--cache-mb") && std::getenv("BMOE_CACHE_MB") == nullptr)
+        cfg.moe.cache_auto = true;
+
+    if (list_buffer_types) {
+        const std::vector<std::string> types = Session::available_tensor_buffer_types();
+        if (types.empty()) {
+            std::fprintf(stderr, "bmoe-server: no llama.cpp buffer types are registered\n");
+            return 1;
+        }
+        for (const std::string & type : types)
+            std::printf("%s\n", type.c_str());
+        return 0;
+    }
 
     if (cfg.model_path.empty()) {
         print_usage(argv[0]);

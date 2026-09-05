@@ -13,7 +13,7 @@
 
 #include <cstdint>
 
-namespace bmoe {
+namespace meitte {
 
 class IExpertSource {
 public:
@@ -119,4 +119,4 @@ public:
     virtual Stats stats() const = 0;
 };
 
-} // namespace bmoe
+} // namespace meitte

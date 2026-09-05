@@ -9,7 +9,7 @@
 // This header is pure policy: it has no llama.cpp dependency and compiles standalone.
 #pragma once
 
-namespace bmoe {
+namespace meitte {
 
 // The expert weight tensors of a MoE layer, named `blk.<il>.<suffix>.weight` in the gguf.
 // A recipe lists the per-layer expert tensors as a suffix table: the common split layout
@@ -33,4 +33,4 @@ const MoeRecipe * find_moe_recipe(const char * arch);
 int n_moe_recipes();
 const MoeRecipe * moe_recipe_at(int i);
 
-} // namespace bmoe
+} // namespace meitte

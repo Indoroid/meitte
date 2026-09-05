@@ -11,7 +11,7 @@
 
 #include <cstdio>
 
-using namespace bmoe;
+using namespace meitte;
 
 static int failures = 0;
 

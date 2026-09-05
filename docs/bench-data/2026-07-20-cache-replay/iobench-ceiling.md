@@ -1,6 +1,6 @@
 # Flash read ceiling vs lane count and read size
 
-Measured with `tools/bmoe-iobench` (new standalone tool: drives `bmoe::FileReader`, the engine's
+Measured with `tools/bmoe-iobench` (new standalone tool: drives `meitte::FileReader`, the engine's
 own read path, but links nothing else — no engine, no llama.cpp). Random O_DIRECT reads against
 the 62 GB gpt-oss-120b gguf on `/data/local/tmp`, 5 s per row, entry state 2.27 GHz / 32 °C.
 

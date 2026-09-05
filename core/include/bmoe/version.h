@@ -10,7 +10,7 @@
 // it cannot vouch for.
 #pragma once
 
-namespace bmoe {
+namespace meitte {
 
 #ifdef BMOE_VERSION
 inline const char * version() {
@@ -22,4 +22,4 @@ inline const char * version() {
 }
 #endif
 
-} // namespace bmoe
+} // namespace meitte

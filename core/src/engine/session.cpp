@@ -5,6 +5,7 @@
 #include "bmoe/version.h"
 #include "bmoe/ngram_draft.h"
 #include "chat_parse.h"
+#include "tensor_overrides.h"
 #include "thinking_control.h"
 #include "../multimodal/mtmd_runtime.h"
 #include "../moe/router_hook.h"
@@ -32,12 +33,14 @@
 #include <cstring>
 #include <exception>
 #include <memory>
+#include <limits>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
-namespace bmoe {
+namespace meitte {
 
 namespace {
 
@@ -62,6 +65,42 @@ void batch_fill(llama_batch & b, const llama_token * toks, int n, llama_pos pos0
         b.seq_id[i][0] = 0;
         b.logits[i] = (int8_t) (all_logits || i == n - 1);
     }
+}
+
+// mtmd replaces its marker with embedding positions, so raw token indices no longer line up with
+// the KV after a media turn. A sentinel lets continuation prove the rendered transcript is unchanged
+// through each media span without pretending an image is one text token.
+constexpr llama_token k_media_kv_sentinel = std::numeric_limits<llama_token>::min();
+
+bool tokenize_media_logical(const llama_vocab * vocab,
+                            const std::string & prompt,
+                            const char * marker,
+                            std::vector<llama_token> & out) {
+    if (!marker || !*marker) return false;
+    out.clear();
+    size_t begin = 0;
+    const std::string media_marker(marker);
+    for (;;) {
+        const size_t marker_at = prompt.find(media_marker, begin);
+        const size_t end = marker_at == std::string::npos ? prompt.size() : marker_at;
+        const std::string_view text(prompt.data() + begin, end - begin);
+        std::vector<llama_token> part(text.size() + 8);
+        int n = llama_tokenize(vocab, text.data(), (int) text.size(), part.data(), (int) part.size(),
+                               /*add_special*/ false, /*parse_special*/ true);
+        if (n < 0) {
+            part.resize((size_t) -n);
+            n = llama_tokenize(vocab, text.data(), (int) text.size(), part.data(), (int) part.size(), false, true);
+        }
+        if (n < 0) return false;
+        part.resize((size_t) n);
+        out.insert(out.end(), part.begin(), part.end());
+        if (marker_at == std::string::npos) break;
+        out.push_back(k_media_kv_sentinel);
+        begin = marker_at + media_marker.size();
+    }
+    if (llama_vocab_get_add_bos(vocab)) out.insert(out.begin(), llama_vocab_bos(vocab));
+    if (llama_vocab_get_add_eos(vocab)) out.push_back(llama_vocab_eos(vocab));
+    return true;
 }
 
 // Graph width for the MTP draft context, and it wants to be SMALL.
@@ -94,26 +133,51 @@ llama_token argmax(const float * logits, int n_vocab) {
     return best;
 }
 
+std::string token_piece(const llama_vocab * vocab, llama_token token) {
+    char small[256];
+    int n = llama_token_to_piece(vocab, token, small, sizeof(small), 0, true);
+    if (n > 0) return std::string(small, n);
+    if (n >= 0) return {};
+
+    std::string piece((size_t) -n, '\0');
+    n = llama_token_to_piece(vocab, token, piece.data(), piece.size(), 0, true);
+    if (n <= 0) return {};
+    piece.resize((size_t) n);
+    return piece;
+}
+
 ggml_type to_ggml_type(KvCacheType type) {
     switch (type) {
-    case KvCacheType::F32: return GGML_TYPE_F32;
-    case KvCacheType::F16: return GGML_TYPE_F16;
-    case KvCacheType::BF16: return GGML_TYPE_BF16;
-    case KvCacheType::Q8_0: return GGML_TYPE_Q8_0;
-    case KvCacheType::Q5_0: return GGML_TYPE_Q5_0;
-    case KvCacheType::Q5_1: return GGML_TYPE_Q5_1;
-    case KvCacheType::Q4_0: return GGML_TYPE_Q4_0;
-    case KvCacheType::Q4_1: return GGML_TYPE_Q4_1;
-    case KvCacheType::IQ4_NL: return GGML_TYPE_IQ4_NL;
+    case KvCacheType::F32:
+        return GGML_TYPE_F32;
+    case KvCacheType::F16:
+        return GGML_TYPE_F16;
+    case KvCacheType::BF16:
+        return GGML_TYPE_BF16;
+    case KvCacheType::Q8_0:
+        return GGML_TYPE_Q8_0;
+    case KvCacheType::Q5_0:
+        return GGML_TYPE_Q5_0;
+    case KvCacheType::Q5_1:
+        return GGML_TYPE_Q5_1;
+    case KvCacheType::Q4_0:
+        return GGML_TYPE_Q4_0;
+    case KvCacheType::Q4_1:
+        return GGML_TYPE_Q4_1;
+    case KvCacheType::IQ4_NL:
+        return GGML_TYPE_IQ4_NL;
     }
     return GGML_TYPE_F16;
 }
 
 llama_flash_attn_type to_flash_attn(FlashAttentionMode mode) {
     switch (mode) {
-    case FlashAttentionMode::Auto: return LLAMA_FLASH_ATTN_TYPE_AUTO;
-    case FlashAttentionMode::Enabled: return LLAMA_FLASH_ATTN_TYPE_ENABLED;
-    case FlashAttentionMode::Disabled: return LLAMA_FLASH_ATTN_TYPE_DISABLED;
+    case FlashAttentionMode::Auto:
+        return LLAMA_FLASH_ATTN_TYPE_AUTO;
+    case FlashAttentionMode::Enabled:
+        return LLAMA_FLASH_ATTN_TYPE_ENABLED;
+    case FlashAttentionMode::Disabled:
+        return LLAMA_FLASH_ATTN_TYPE_DISABLED;
     }
     return LLAMA_FLASH_ATTN_TYPE_AUTO;
 }
@@ -360,9 +424,12 @@ struct Session::Impl {
     // and prefill only the diverging suffix instead of re-running the whole conversation.
     std::vector<common_chat_msg> chat_history;
     std::vector<llama_token> kv_tokens;
-    // v1 intentionally does not describe media embeddings with kv_tokens. Once a media turn has
-    // populated KV, continuation is rejected until media-aware span tracking is implemented.
+    // Text tokens plus k_media_kv_sentinel entries form a logical transcript used to prove that a
+    // preserved multimodal KV is extended rather than rewritten. kv_n_past stays physical: mtmd's
+    // image spans occupy many decoder positions, never one sentinel position.
     bool kv_has_media = false;
+    llama_pos kv_n_past = 0;
+    size_t kv_last_generation_start = 0;
 
     // Route trace (diagnostics): null unless requested AND streaming is on — there is no routing
     // to trace otherwise.
@@ -409,6 +476,10 @@ struct Session::Impl {
 
 Session::Session() : impl_(std::make_unique<Impl>()) {}
 Session::~Session() = default;
+
+std::vector<std::string> Session::available_tensor_buffer_types() {
+    return meitte::available_tensor_buffer_types();
+}
 
 double Session::load_seconds() const {
     return impl_->load_seconds;
@@ -652,6 +723,14 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
     mparams.use_extra_bufts = false;
     mparams.n_gpu_layers = 0;
 
+    // These are placement requests interpreted by llama.cpp while it loads a fully resident
+    // model. The strings belong to cfg and the C array stays alive through the load call.
+    std::vector<llama_model_tensor_buft_override> tensor_buft_overrides;
+    std::string tensor_override_error;
+    if (!resolve_tensor_buffer_overrides(cfg.tensor_buffer_overrides, tensor_buft_overrides, tensor_override_error))
+        return fail(tensor_override_error);
+    if (!tensor_buft_overrides.empty()) mparams.tensor_buft_overrides = tensor_buft_overrides.data();
+
     // Optional active-expert override: reduce the model's top-k routing (e.g. 8 -> 6) to cut
     // per-token compute and — under streaming — flash I/O, at a quality cost. Applied purely
     // through llama.cpp's public kv_overrides on the arch-prefixed expert_used_count key: the
@@ -820,7 +899,7 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
         ctx,
         [](void * ud) -> bool {
             auto * p = static_cast<Impl *>(ud);
-            return p->cancel_requested.load(std::memory_order_relaxed) || p->source.fatal();
+            return p->cancel_requested.load(std::memory_order_relaxed) || p->hook->fatal() || p->source.fatal();
         },
         &im);
 
@@ -892,6 +971,12 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
                                 "'");
                 auto it = offs.off_by_name.find(t->name);
                 if (it == offs.off_by_name.end()) return fail(std::string("no gguf offset for tensor ") + t->name);
+                auto size = offs.size_by_name.find(t->name);
+                if (size == offs.size_by_name.end()) return fail(std::string("no gguf size for tensor ") + t->name);
+                if (t->ne[2] <= 0 || t->ne[2] > std::numeric_limits<int>::max() ||
+                    (uint64_t) t->nb[2] > std::numeric_limits<uint64_t>::max() / (uint64_t) t->ne[2] ||
+                    (uint64_t) t->nb[2] * (uint64_t) t->ne[2] != size->second)
+                    return fail(std::string("gguf layout does not match captured expert tensor ") + t->name);
                 L.proj[p].file_off = it->second;
                 L.proj[p].file_idx = offs.file_by_name.at(t->name); // same parse as the offset, so present
                 const int ne2 = (int) t->ne[2];
@@ -1162,9 +1247,9 @@ RunResult Session::generate(const GenerateRequest & req,
     const bool has_media = !req.media.empty();
     if (has_media && !im.mtmd.enabled()) return fail("media input requires a loaded --mmproj");
     if (has_media && !req.clear_kv)
-        return fail("multimodal KV continuation is not enabled yet; start the media request with clear_kv=true");
-    if (!req.clear_kv && im.kv_has_media)
-        return fail("cannot continue a multimodal KV cache yet; start a new chat with clear_kv=true");
+        return fail("adding media to a preserved KV is not supported; start the media request with clear_kv=true");
+    if (!req.clear_kv && im.kv_has_media && im.cfg.spec.enabled())
+        return fail("multimodal KV continuation is not compatible with --mtp/--ngram speculative decoding");
     if (has_media && im.cfg.spec.enabled())
         return fail("multimodal prompts are not yet compatible with --mtp/--ngram speculative decoding");
     if (has_media && (im.route_trace || im.compute_trace || im.io_trace))
@@ -1180,6 +1265,8 @@ RunResult Session::generate(const GenerateRequest & req,
         im.chat_history.clear();
         im.kv_tokens.clear();
         im.kv_has_media = false;
+        im.kv_n_past = 0;
+        im.kv_last_generation_start = 0;
         // A new chat resets the sampler RNG, so a fixed seed reproduces the same transcript from a
         // fresh conversation. A continued turn (clear_kv=false) keeps the stream going, matching the
         // KV it decodes against.
@@ -1209,12 +1296,23 @@ RunResult Session::generate(const GenerateRequest & req,
     std::string prompt = req.prompt;
     std::string media_prefix;
     if (has_media) {
-        for (size_t i = 0; i < req.media.size(); ++i) media_prefix += im.mtmd.marker();
+        for (size_t i = 0; i < req.media.size(); ++i)
+            media_prefix += im.mtmd.marker();
     }
     bool chat_on = im.chat_on && req.chatml;
     bool history_pushed = false;   // did we append this turn's user message to chat_history?
     bool history_replaced = false; // did the caller provide the complete transcript?
     std::vector<common_chat_msg> prior_history;
+    auto rollback_history = [&] {
+        if (history_pushed) {
+            im.chat_history.pop_back();
+            history_pushed = false;
+        }
+        if (history_replaced) {
+            im.chat_history = std::move(prior_history);
+            history_replaced = false;
+        }
+    };
     bool prefilled_answer = false; // closed the reasoning span in the prompt, so skip reasoning parse
     common_chat_parser_params parse_params;
     common_chat_params chat_params;
@@ -1225,8 +1323,7 @@ RunResult Session::generate(const GenerateRequest & req,
             if (nlohmann::json::parse(value, nullptr, false).is_discarded())
                 return fail("chat_template_kwargs['" + key + "'] is not valid JSON");
         }
-        if (req.reasoning_effort.size() > 64)
-            return fail("reasoning_effort must be at most 64 bytes");
+        if (req.reasoning_effort.size() > 64) return fail("reasoning_effort must be at most 64 bytes");
         try {
             if (!req.messages.empty()) {
                 // Render structured content BEFORE mutating persistent history. OpenAI multimodal
@@ -1248,7 +1345,10 @@ RunResult Session::generate(const GenerateRequest & req,
                     // Backward-compatible API: callers that provide media bytes but no structured
                     // parts get the old behaviour — all markers attach to the last user message.
                     for (size_t i = req.messages.size(); i > 0; --i) {
-                        if (req.messages[i - 1].role == "user") { media_user_index = i - 1; break; }
+                        if (req.messages[i - 1].role == "user") {
+                            media_user_index = i - 1;
+                            break;
+                        }
                     }
                     if (media_user_index == req.messages.size())
                         return fail("multimodal chat request has no user message to attach media to");
@@ -1266,8 +1366,7 @@ RunResult Session::generate(const GenerateRequest & req,
                             if (part.kind == ChatContentKind::Text) {
                                 msg.content += part.text;
                             } else {
-                                if (!im.mtmd.enabled())
-                                    return fail("media content part requires a loaded --mmproj");
+                                if (!im.mtmd.enabled()) return fail("media content part requires a loaded --mmproj");
                                 if (part.media_index >= req.media.size())
                                     return fail("media content part references a missing media input");
                                 if (part.media_index != next_media_index)
@@ -1358,14 +1457,7 @@ RunResult Session::generate(const GenerateRequest & req,
             prompt = chat_params.prompt;
             parse_params = detail::build_parse_params(chat_params);
         } catch (const std::exception & e) {
-            if (history_pushed) {
-                im.chat_history.pop_back();
-                history_pushed = false;
-            }
-            if (history_replaced) {
-                im.chat_history = std::move(prior_history);
-                history_replaced = false;
-            }
+            rollback_history();
             if (!im.cfg.chat_template.empty()) return fail(std::string("chat template apply failed: ") + e.what());
             std::fprintf(stderr, "bmoe: chat template apply failed (%s); using raw prompt\n", e.what());
             chat_on = false;
@@ -1374,12 +1466,22 @@ RunResult Session::generate(const GenerateRequest & req,
 
     if (has_media && !chat_on) prompt = media_prefix + req.prompt;
 
+    const bool media_kv_continuation = !req.clear_kv && im.kv_has_media;
+    if (media_kv_continuation && !chat_on) {
+        rollback_history();
+        return fail("multimodal KV continuation requires a chat template");
+    }
+
     common_sampler_ptr reasoning_sampler;
     if (req.reasoning_budget_tokens >= 0) {
-        if (!chat_on)
+        if (!chat_on) {
+            rollback_history();
             return fail("reasoning_budget_tokens requires a chat template");
-        if (chat_params.thinking_start_tag.empty() || chat_params.thinking_end_tags.empty())
+        }
+        if (chat_params.thinking_start_tag.empty() || chat_params.thinking_end_tags.empty()) {
+            rollback_history();
             return fail("model chat template does not expose reasoning delimiters");
+        }
 
         common_params_sampling params;
         const SamplingConfig & sampling = req.override_sampling ? req.sampling : im.cfg.sampling;
@@ -1391,17 +1493,39 @@ RunResult Session::generate(const GenerateRequest & req,
         params.samplers = {COMMON_SAMPLER_TYPE_TOP_K, COMMON_SAMPLER_TYPE_TOP_P, COMMON_SAMPLER_TYPE_TEMPERATURE};
         params.reasoning_budget_tokens = req.reasoning_budget_tokens;
         params.generation_prompt = chat_params.generation_prompt;
+        const size_t last_thinking_start = prompt.rfind(chat_params.thinking_start_tag);
+        size_t last_thinking_end = std::string::npos;
+        for (const std::string & tag : chat_params.thinking_end_tags) {
+            const size_t at = prompt.rfind(tag);
+            if (at != std::string::npos && (last_thinking_end == std::string::npos || at > last_thinking_end))
+                last_thinking_end = at;
+        }
+        const bool thinking_prefilled =
+            last_thinking_start != std::string::npos &&
+            (last_thinking_end == std::string::npos || last_thinking_end < last_thinking_start);
+        // Some Jinja templates emit this opener before decoding, while common_sampler only sees
+        // generation_prompt. Arm it explicitly below instead of accepting it twice during init.
+        if (thinking_prefilled) params.generation_prompt.clear();
         params.reasoning_budget_start = common_tokenize(im.vocab, chat_params.thinking_start_tag, false, true);
         for (const std::string & tag : chat_params.thinking_end_tags)
             params.reasoning_budget_end.push_back(common_tokenize(im.vocab, tag, false, true));
         params.reasoning_budget_forced = params.reasoning_budget_end.front();
         reasoning_sampler.reset(common_sampler_init(im.model.get(), params));
+        if (thinking_prefilled)
+            for (const llama_token token : params.reasoning_budget_start)
+                common_sampler_accept(reasoning_sampler.get(), token, /*is_generated*/ true);
     }
 
     std::vector<llama_token> tokens;
     int n_prompt = 0;
     llama_pos prompt_n_past = 0;
-    if (!has_media) {
+    if (has_media || media_kv_continuation) {
+        if (!tokenize_media_logical(im.vocab, prompt, im.mtmd.marker(), tokens) || tokens.empty()) {
+            rollback_history();
+            return fail("multimodal prompt tokenization failed");
+        }
+        n_prompt = (int) tokens.size();
+    } else {
         tokens.resize(prompt.size() + 8);
         n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
                                   /*add_special*/ true, /*parse_special*/ true);
@@ -1410,11 +1534,11 @@ RunResult Session::generate(const GenerateRequest & req,
             n_prompt = llama_tokenize(im.vocab, prompt.c_str(), (int) prompt.size(), tokens.data(), (int) tokens.size(),
                                       true, true);
         }
-        if (n_prompt < 1) return fail("empty prompt after tokenization");
+        if (n_prompt < 1) {
+            rollback_history();
+            return fail("empty prompt after tokenization");
+        }
         tokens.resize(n_prompt);
-        if (n_prompt + req.n_predict + 8 > im.cfg.n_ctx)
-            return fail("prompt + n_predict exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) +
-                        "); open the session with a larger n_ctx");
     }
 
     // The text to surface: with chat on, parse the raw output so a reasoning model's internal
@@ -1448,51 +1572,90 @@ RunResult Session::generate(const GenerateRequest & req,
     // kv_tokens empty, so n_common = 0 and this reduces to a full prefill — the one-shot path the
     // byte-identity gates exercise stays unchanged.
     size_t n_common = 0;
+    bool media_append_only = false;
+    llama_pos media_reuse_n_past = im.kv_n_past;
     if (chat_on && !has_media && !im.kv_tokens.empty()) {
-        const size_t max_common = tokens.size() > 0 ? tokens.size() - 1 : 0;
-        while (n_common < im.kv_tokens.size() && n_common < max_common && im.kv_tokens[n_common] == tokens[n_common])
-            ++n_common;
-        if (n_common < im.kv_tokens.size()) {
-            // SWA-style memory (e.g. Gemma) can refuse a partial removal; fall back to a full
-            // re-prefill in that case rather than continuing from an inconsistent cache.
-            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
-                llama_memory_clear(llama_get_memory(ctx), true);
+        if (media_kv_continuation) {
+            while (n_common < im.kv_tokens.size() && n_common < tokens.size() &&
+                   im.kv_tokens[n_common] == tokens[n_common])
+                ++n_common;
+            if (n_common != im.kv_tokens.size()) {
+                if (im.kv_last_generation_start >= im.kv_tokens.size()) {
+                    rollback_history();
+                    return fail("preserved multimodal KV has no generated assistant span; start a new chat with "
+                                "clear_kv=true");
+                }
+                const auto reply_begin = im.kv_tokens.begin() + im.kv_last_generation_start;
+                const auto reply =
+                    std::search(tokens.begin() + n_common, tokens.end(), reply_begin, im.kv_tokens.end());
+                if (reply == tokens.end()) {
+                    rollback_history();
+                    return fail("preserved multimodal KV cannot align the prior assistant response; start a new chat with "
+                                "clear_kv=true");
+                }
+                tokens.assign(reply + (im.kv_tokens.end() - reply_begin), tokens.end());
+                n_prompt = (int) tokens.size();
                 n_common = 0;
+                media_append_only = true;
             }
-            im.kv_tokens.resize(n_common);
+        } else {
+            const size_t max_common = tokens.size() > 0 ? tokens.size() - 1 : 0;
+            while (n_common < im.kv_tokens.size() && n_common < max_common && im.kv_tokens[n_common] == tokens[n_common])
+                ++n_common;
+            if (n_common < im.kv_tokens.size()) {
+                // SWA-style memory (e.g. Gemma) can refuse a partial removal; fall back to a full
+                // re-prefill in that case rather than continuing from an inconsistent cache.
+                if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1)) {
+                    llama_memory_clear(llama_get_memory(ctx), true);
+                    n_common = 0;
+                }
+                im.kv_tokens.resize(n_common);
+            }
+            // The draft context mirrors the target's positions, so it has to be rewound to the SAME
+            // point — including when n_common did not move, since the previous turn left it holding
+            // everything it generated. Miss this and the first prefill batch of the turn starts at a
+            // position the draft context already has, which llama.cpp rejects outright: the second
+            // message of a conversation fails while the first always works.
+            if (im.ctx_dft && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, (llama_pos) n_common, -1))
+                llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
         }
-        // The draft context mirrors the target's positions, so it has to be rewound to the SAME
-        // point — including when n_common did not move, since the previous turn left it holding
-        // everything it generated. Miss this and the first prefill batch of the turn starts at a
-        // position the draft context already has, which llama.cpp rejects outright: the second
-        // message of a conversation fails while the first always works.
-        if (im.ctx_dft && !llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, (llama_pos) n_common, -1))
-            llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
+    }
+
+    const size_t n_new_prompt_tokens = (size_t) n_prompt - n_common;
+    const long long context_need = (media_kv_continuation ? (long long) media_reuse_n_past : 0LL) +
+                                   (long long) n_new_prompt_tokens + req.n_predict + 8;
+    if (context_need > im.cfg.n_ctx) {
+        rollback_history();
+        return fail("prompt + n_predict exceeds the session n_ctx (" + std::to_string(im.cfg.n_ctx) +
+                    "); open the session with a larger n_ctx");
     }
 
     // Roll this turn back to the state before it started: drop the KV added this turn, forget the
     // tokens we fed, and un-append the user message. Used on cancel so prior turns stay usable.
+    const size_t rollback_tokens = media_append_only ? im.kv_tokens.size() : n_common;
+    const llama_pos rollback_n_past = media_kv_continuation ? media_reuse_n_past : (llama_pos) n_common;
+    const size_t rollback_generation_start = im.kv_last_generation_start;
     auto rollback_turn = [&]() {
         if (chat_on) {
-            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, (llama_pos) n_common, -1))
+            if (!llama_memory_seq_rm(llama_get_memory(ctx), 0, rollback_n_past, -1))
                 llama_memory_clear(llama_get_memory(ctx), true);
-            im.kv_tokens.resize(n_common);
-            if (history_pushed) {
-                im.chat_history.pop_back();
-                history_pushed = false;
-            }
-            if (history_replaced) {
-                im.chat_history = prior_history;
-                history_replaced = false;
-            }
+            im.kv_tokens.resize(rollback_tokens);
+            im.kv_last_generation_start = rollback_generation_start;
+            rollback_history();
         } else {
             llama_memory_clear(llama_get_memory(ctx), true);
         }
         // Whatever the target rolled back to, the draft context follows: a cancelled turn that left
         // the two at different positions would fail the NEXT turn, not this one.
-        if (has_media) im.kv_has_media = false;
+        if (has_media) {
+            im.kv_has_media = false;
+            im.kv_n_past = 0;
+            im.kv_last_generation_start = 0;
+        } else if (media_kv_continuation) {
+            im.kv_n_past = rollback_n_past;
+        }
         if (im.ctx_dft) {
-            const llama_pos keep = chat_on ? (llama_pos) n_common : 0;
+            const llama_pos keep = chat_on ? rollback_n_past : 0;
             if (!llama_memory_seq_rm(llama_get_memory(im.ctx_dft.get()), 0, keep, -1))
                 llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
         }
@@ -1579,8 +1742,16 @@ RunResult Session::generate(const GenerateRequest & req,
         }
         n_prompt = (int) mm.n_tokens;
         prompt_n_past = mm.n_past;
+        im.kv_tokens = std::move(tokens);
         im.kv_has_media = true;
+        im.kv_n_past = mm.n_past;
     } else {
+        if (media_kv_continuation &&
+            std::find(tokens.begin() + n_common, tokens.end(), k_media_kv_sentinel) != tokens.end()) {
+            rollback_history();
+            return fail("multimodal KV continuation cannot change the original media transcript; start a new chat with "
+                        "clear_kv=true");
+        }
         for (int i = (int) n_common; i < n_prompt; i += im.cfg.n_batch) {
             const int chunk = std::min(im.cfg.n_batch, n_prompt - i);
             llama_batch pf;
@@ -1609,7 +1780,7 @@ RunResult Session::generate(const GenerateRequest & req,
             for (int i = (int) n_common; i < n_prompt; ++i)
                 im.kv_tokens.push_back(tokens[i]);
         if (mtp_on) common_speculative_begin(im.mtp.get(), /*seq_id*/ 0, tokens);
-        prompt_n_past = n_prompt;
+        prompt_n_past = media_kv_continuation ? media_reuse_n_past + (llama_pos) (n_prompt - n_common) : n_prompt;
     }
     const double prefill_seconds = secs(t_prefill0, clock_t_::now());
     // Prefill attribution, closed here (the begin() snapshot sits above the chunk loop): deltas
@@ -1618,6 +1789,7 @@ RunResult Session::generate(const GenerateRequest & req,
     // union of stalled intervals, cpu is whole-process (upper bound on compute-thread time).
     prefill_tally.end(moe.enabled, im.source);
     const float * logits = llama_get_logits_ith(ctx, -1);
+    if (chat_on) im.kv_last_generation_start = im.kv_tokens.size();
 
     // ── greedy generation ──
     res.ok = true;
@@ -1687,7 +1859,8 @@ RunResult Session::generate(const GenerateRequest & req,
     // last-position logits, which llama_sampler_sample reads at index -1 — the same logits argmax
     // would have read.
     llama_token tok = reasoning_sampler ? common_sampler_sample(reasoning_sampler.get(), ctx, -1)
-                                        : im.smpl ? llama_sampler_sample(im.smpl, ctx, -1) : argmax(logits, im.n_vocab);
+                      : im.smpl         ? llama_sampler_sample(im.smpl, ctx, -1)
+                                        : argmax(logits, im.n_vocab);
 
     while (n_gen < req.n_predict) {
         if (llama_vocab_is_eog(im.vocab, tok)) break;
@@ -1869,12 +2042,10 @@ RunResult Session::generate(const GenerateRequest & req,
         }
         for (size_t e = 0; e < confirmed.size() && n_gen < req.n_predict; ++e) {
             const llama_token out = confirmed[e];
-            char piece[256];
-            int np = llama_token_to_piece(im.vocab, out, piece, sizeof(piece), 0, true);
-            std::string delta = np > 0 ? std::string(piece, np) : std::string();
+            std::string delta = token_piece(im.vocab, out);
             gen += delta;
             if (reasoning_sampler) common_sampler_accept(reasoning_sampler.get(), out, /*is_generated*/ true);
-            if (chat_on && !im.kv_has_media) im.kv_tokens.push_back(out); // text-only KV mirror
+            if (chat_on) im.kv_tokens.push_back(out);
             if (spec_on) mtp_ctx.push_back(out);
             ++n_gen;
 
@@ -1912,7 +2083,8 @@ RunResult Session::generate(const GenerateRequest & req,
         const int32_t row = wide ? n_acc : -1;
         logits = llama_get_logits_ith(ctx, row);
         tok = reasoning_sampler ? common_sampler_sample(reasoning_sampler.get(), ctx, row)
-                                : im.smpl ? llama_sampler_sample(im.smpl, ctx, row) : argmax(logits, im.n_vocab);
+              : im.smpl         ? llama_sampler_sample(im.smpl, ctx, row)
+                                : argmax(logits, im.n_vocab);
     }
 
     // Speculation can leave the KV ahead of what the caller received: an accepted end-of-generation
@@ -1947,8 +2119,9 @@ RunResult Session::generate(const GenerateRequest & req,
     loop_overhead_s += secs(loop_mark, clock_t_::now());
     s.loop_overhead_s_per_token = n_gen ? loop_overhead_s / n_gen : 0.0;
     s.n_prompt = has_media ? n_prompt : n_prompt - (int) n_common;
-    s.n_past = has_media ? (int) (prompt_n_past + n_gen)
-                         : chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen;
+    s.n_past = chat_on && im.kv_has_media ? (int) n_past
+                                           : has_media ? (int) (prompt_n_past + n_gen)
+                                                       : chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen;
     s.load_seconds = im.load_seconds;
     s.prefill_seconds = prefill_seconds;
     s.prefill_cpu_seconds = prefill_tally.cpu_seconds;
@@ -2062,6 +2235,7 @@ RunResult Session::generate(const GenerateRequest & req,
         // is left exactly as it was before this prompt and stays continuable.
         rollback_turn();
     } else if (chat_on) {
+        if (im.kv_has_media) im.kv_n_past = n_past;
         // Commit the assistant turn to the running conversation. Parsing separates a thinking
         // model's reasoning from the answer; the next turn re-renders history from these messages.
         // Reuses the parse above. A prefilled turn has no turn header in the stream to parse — the
@@ -2079,4 +2253,4 @@ RunResult Session::generate(const GenerateRequest & req,
     return res;
 }
 
-} // namespace bmoe
+} // namespace meitte

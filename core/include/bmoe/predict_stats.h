@@ -12,7 +12,7 @@
 // first while a system's usable number is closer to the second.
 #pragma once
 
-namespace bmoe {
+namespace meitte {
 
 struct PredictorStats {
     long long rows = 0;  // routings scored (one per MoE layer per decoded token)
@@ -26,4 +26,4 @@ struct PredictorStats {
     double exact_frac() const { return rows > 0 ? (double) exact / (double) rows : 0.0; }
 };
 
-} // namespace bmoe
+} // namespace meitte

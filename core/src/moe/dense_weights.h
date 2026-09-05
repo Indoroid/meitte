@@ -29,7 +29,7 @@
 
 struct ggml_tensor;
 
-namespace bmoe {
+namespace meitte {
 
 class RowStream;
 
@@ -141,4 +141,4 @@ private:
     double resident_frac_ = -1.0; // last sampled dense residency; -1 = never/unmeasured
 };
 
-} // namespace bmoe
+} // namespace meitte

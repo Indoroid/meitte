@@ -5,7 +5,7 @@
 #include <cstring>
 #include <vector>
 
-namespace bmoe {
+namespace meitte {
 
 using clock_t_ = std::chrono::steady_clock;
 
@@ -101,6 +101,11 @@ bool FileReader::open(const std::string & path, int lanes, bool direct, size_t a
 
 long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) {
     if (nbytes == 0) return 0;
+    if (off > fsize_ || nbytes > fsize_ - off) {
+        std::fprintf(stderr, "bmoe: requested range [%llu, %llu) is outside a %llu-byte file\n",
+                     (unsigned long long) off, (unsigned long long) (off + nbytes), (unsigned long long) fsize_);
+        return -1;
+    }
     const pio::fd_t fd = fds_[lane];
 
     // Plain reads: no alignment constraint, so the bounce buys nothing. Read straight into the
@@ -109,7 +114,7 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
     // uncached without being an I/O mode. It must not also pay an extra copy of every byte plus a
     // leading partial-block over-read just to share the mechanics O_DIRECT needs.
     if (!aligned_reads_) {
-        const uint64_t end = (fsize_ && off + nbytes > fsize_) ? fsize_ : off + nbytes;
+        const uint64_t end = off + nbytes;
         const auto t0 = clock_t_::now();
         for (uint64_t a = off; a < end;) {
             long long got = pio::pread_at(fd, (char *) dst + (a - off), (size_t) (end - a), a);
@@ -192,4 +197,4 @@ void FileReader::close() {
     bounce_sz_.clear();
 }
 
-} // namespace bmoe
+} // namespace meitte

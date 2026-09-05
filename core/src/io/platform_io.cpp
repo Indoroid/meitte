@@ -1,7 +1,7 @@
 #include "platform_io.h"
 
 // System headers MUST be included at global scope, never inside the namespace below:
-// <cstdlib> etc. do `using ::abs;` and would otherwise be pulled into bmoe::pio, where
+// <cstdlib> etc. do `using ::abs;` and would otherwise be pulled into meitte::pio, where
 // ::abs is not visible (GCC hard-errors; MSVC happened to tolerate it).
 #if defined(_WIN32)
 #include <windows.h>
@@ -32,7 +32,7 @@
 #endif
 #endif
 
-namespace bmoe::pio {
+namespace meitte::pio {
 
 #if !defined(_WIN32)
 // mincore's vector argument is `unsigned char *` on Linux/Android but `char *` on the BSDs and
@@ -458,4 +458,4 @@ void pinned_free(PinnedAlloc *) {}
 
 #endif
 
-} // namespace bmoe::pio
+} // namespace meitte::pio

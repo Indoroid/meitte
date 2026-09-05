@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 
-namespace bmoe {
+namespace meitte {
 
 int ngram_draft(const std::vector<int32_t> & ctx,
                 int32_t last,
@@ -65,4 +65,4 @@ int ngram_draft(const std::vector<int32_t> & ctx,
     return (int) n;
 }
 
-} // namespace bmoe
+} // namespace meitte

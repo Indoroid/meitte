@@ -10,10 +10,11 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
-namespace bmoe {
+namespace meitte {
 
 // Token sampling. temp <= 0 (the default) selects greedy argmax — the deterministic path the
 // byte-identity gates depend on, and today's behaviour for any caller that sets nothing. temp > 0
@@ -362,6 +363,20 @@ struct MultimodalConfig {
     bool enabled() const { return !mmproj_path.empty(); }
 };
 
+// A llama.cpp model-load placement override. `pattern` is a regular expression matched against
+// tensor names and `buffer_type` is one of the names reported by --list-buffer-types. This changes
+// where a tensor is allocated; it never changes the GGUF tensor type or rewrites model bytes.
+struct TensorBufferOverride {
+    std::string pattern;
+    std::string buffer_type;
+};
+
+// Parse the comma-separated syntax shared with llama.cpp's --override-tensor. Keeping it in the
+// pure config layer makes CLI and server input validation identical without importing backend types.
+bool parse_tensor_buffer_overrides(const std::string & value,
+                                   std::vector<TensorBufferOverride> & out,
+                                   std::string & error);
+
 // A full run: model, prompt, decoding, streaming, telemetry.
 struct RunConfig {
     std::string model_path;
@@ -406,6 +421,21 @@ struct RunConfig {
     // Only meaningful with chatml; the raw-prompt path ignores it.
     bool think = true;
     std::string reasoning_effort;
+    // -1 leaves reasoning unlimited. A non-negative value caps the template's reasoning span
+    // without reducing n_predict, matching llama.cpp's --reasoning-budget semantics.
+    int reasoning_budget_tokens = -1;
+    // Unset leaves the model template's policy intact. Set values are passed as the Jinja
+    // preserve_reasoning kwarg for templates that support retaining thought in history.
+    std::optional<bool> reasoning_preserve;
+
+    // Keep the prior turn's KV state in bmoe-cli --session. The HTTP server has an equivalent
+    // mode, but preserves per-server state rather than sharing it through RunConfig.
+    bool kv_preserve = false;
+
+    // Placement-only overrides applied when llama.cpp loads a fully resident model. They are
+    // deliberately incompatible with MoE streaming: the streamer must retain native GGUF offsets
+    // and tensor pointers for every expert it serves from flash.
+    std::vector<TensorBufferOverride> tensor_buffer_overrides;
 
     // Override the number of active MoE experts per token (top-k routing). 0 = use the
     // model's own <arch>.expert_used_count from the gguf. A lower value cuts per-token
@@ -438,4 +468,4 @@ struct ValidationResult {
 // io_threads in range; n_predict/n_threads positive. Pure function — no I/O.
 ValidationResult validate(const RunConfig & cfg);
 
-} // namespace bmoe
+} // namespace meitte

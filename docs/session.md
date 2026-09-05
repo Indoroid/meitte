@@ -33,6 +33,11 @@ warming the cache changes latency, never the bytes.
   owns the conversation (`chat_history`) and re-renders the model's chat template over the *whole*
   history each turn, so the caller sends only the new user message — not the running transcript.
 
+`bmoe-cli --session --kv-preserve` makes subsequent commands choose `clear_kv=false` by default;
+an individual JSON command can still send `"clear_kv":true` to reset. `bmoe-server --kv-preserve`
+does the same for one incremental server-wide conversation. It is intentionally not a multi-client
+session store: a caller that needs isolation must start a fresh chat with `clear_kv:true`.
+
 **KV prefix reuse.** Re-rendering the full history would re-tokenize the entire conversation, but
 most of it is already decoded into the KV. Each turn the engine diffs the freshly rendered tokens
 against `kv_tokens` (the tokens currently in the KV, in order), keeps the common prefix, removes the
@@ -77,9 +82,11 @@ is rejected without tearing the session down.
 `bmoe-cli --session` exposes this over a line protocol (requests on stdin, `BMOE_*` responses on
 stdout — see [telemetry.md](telemetry.md)). A generate request may send either the legacy `prompt`
 or a complete `messages` transcript, plus `think`, `reasoning_effort`, and JSON-valued
-`chat_template_kwargs`; these request controls do not reopen the session. Library callers and
-`bmoe-server` may additionally set a non-negative `reasoning_budget_tokens` value to limit only
-the template's reasoning span (`0` closes it at once), not the final-answer `n_predict` allowance.
+`chat_template_kwargs`; these request controls do not reopen the session. `--reasoning-budget N`
+limits only the template's reasoning span (`0` closes it at once), not the final-answer
+`n_predict` allowance. `--reasoning-preserve` and `--no-reasoning-preserve` pass the model
+template's `preserve_reasoning` setting when it supports that policy. The server also accepts a
+request-local `reasoning_budget_tokens` or `thinking_budget_tokens` value.
 The Android example runs one such process per model:
 the first prompt loads the model, later prompts reuse the warm process, and the session is freed on
 an explicit **Unload** or after an idle timeout. Changing the model or any streaming setting

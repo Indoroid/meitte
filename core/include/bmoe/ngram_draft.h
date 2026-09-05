@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace bmoe {
+namespace meitte {
 
 // Prompt-lookup drafting: propose the continuation that followed the last time this exact token
 // sequence was seen, in the prompt or in what has been generated so far.
@@ -47,4 +47,4 @@ int ngram_draft(const std::vector<int32_t> & ctx,
                 int max_match,
                 std::vector<int32_t> & out);
 
-} // namespace bmoe
+} // namespace meitte
