@@ -11,7 +11,7 @@ the code, and you do not pick any settings: the protocol fixes them so rows comp
 
 ## Start here
 
-**Which model?** Any MoE the engine supports (`bmoe-cli --list-archs`), any quantization. No model
+**Which model?** Any MoE the engine supports (`meitte-cli --list-archs`), any quantization. No model
 yet? The [catalog table](#models-that-line-up-with-the-readme) lists what the app ships. Larger
 than your RAM is the interesting case; one that fits is still a valid row (it measures what
 streaming costs against running resident). The report asks which of the two you are in.
@@ -27,8 +27,8 @@ scripts/bench-report.sh /path/to/model.gguf
 It builds the CLI, records your CPU / RAM / drive, measures the drive at the request size the
 engine actually issues, runs the protocol, prints two markdown tables. Paste both. Done.
 
-- **No toolchain?** Every release attaches a prebuilt `bmoe-cli` (Linux x86_64 / aarch64, macOS
-  arm64, Windows x86_64). Point the script at it: `BMOE_CLI=/path/to/bmoe-cli scripts/bench-report.sh model.gguf`.
+- **No toolchain?** Every release attaches a prebuilt `meitte-cli` (Linux x86_64 / aarch64, macOS
+  arm64, Windows x86_64). Point the script at it: `BMOE_CLI=/path/to/meitte-cli scripts/bench-report.sh model.gguf`.
 - **Binary will not start?** The x86_64 builds assume AVX2, the aarch64 one armv8.2-a with dotprod.
   Drop `BMOE_CLI=` and it builds from source.
 - **Windows:** use the prebuilt binary with the command under [On a phone](#on-a-phone), minus the
@@ -40,7 +40,7 @@ engine actually issues, runs the protocol, prints two markdown tables. Paste bot
   tokens, screenshot the telemetry panel. Change three settings first, or the row is measuring
   something else: **cold-expert dropping Off** (it defaults to 75 %, which is a lossy speedup),
   **cache Auto**, **context 2048**. Everything else already matches the protocol.
-- **Exact path** (comparable with the PC rows): push `bmoe-cli` and run it over adb, see
+- **Exact path** (comparable with the PC rows): push `meitte-cli` and run it over adb, see
   [On a phone](#on-a-phone).
 
 Either way the app cannot measure your drive's raw read rate, so a phone row leaves that column
@@ -77,7 +77,7 @@ Override with an environment variable, and say so in the issue:
 | `UBATCH` | 512 | memory is tight and you will trade prefill width for it, or you want the old full-width behaviour (`UBATCH=0`) |
 | `N_PREDICT` | 256 | never below 256, the cache is still warming |
 
-Flags after the model path reach `bmoe-cli` verbatim (`--no-think` for gpt-oss,
+Flags after the model path reach `meitte-cli` verbatim (`--no-think` for gpt-oss,
 `--n-expert-used 6` for a turbo top-k row). A tuned row is welcome, it just sits *next to* the
 default row rather than replacing it. To understand the knobs first, see
 [benchmark-method.md](benchmark-method.md).
@@ -89,12 +89,12 @@ as one.
 
 ### On a phone
 
-`bench-report.sh` is Linux and macOS only. On Android, push `bmoe-cli` (from
+`bench-report.sh` is Linux and macOS only. On Android, push `meitte-cli` (from
 `scripts/build-android.ps1`, or the aarch64 release binary) and run the same protocol:
 
 ```bash
 adb push MODEL.gguf /data/local/tmp/
-adb shell /data/local/tmp/bmoe-cli -m /data/local/tmp/MODEL.gguf --chatml -n 256 -t 4 --ubatch 512 \
+adb shell /data/local/tmp/meitte-cli -m /data/local/tmp/MODEL.gguf --chatml -n 256 -t 4 --ubatch 512 \
   --moe-stream --cache-mb auto --io-threads 4 --overlap --dense-weights anon \
   --csv /data/local/tmp/run.csv \
   -p "Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field"

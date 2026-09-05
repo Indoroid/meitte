@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Live bmoe-server contract test against the official LFM2.5-8B-A1B GGUF."""
+"""Live meitte-server contract test against the official LFM2.5-8B-A1B GGUF."""
 
 import argparse
 import http.client

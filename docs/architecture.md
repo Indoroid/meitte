@@ -10,7 +10,7 @@ a single ~25-line hook on a fork branch with an explicit sunset (see below and
 ## Layers
 
 ```
-cli/            bmoe-cli and bmoe-server — parse flags; the only place env vars are read
+cli/            meitte-cli and meitte-server — parse flags; the only place env vars are read
 core/
   include/bmoe/ ports (interfaces) + config, pure policy, no llama.cpp dependency
     config.h        RunConfig + validate()
@@ -35,7 +35,7 @@ core/
 third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
 tests/          byte-identity gates
-examples/android an APK that drives bmoe-cli via ProcessBuilder
+examples/android an APK that drives meitte-cli via ProcessBuilder
 ```
 
 Dependencies point inward: adapters depend on the port headers, the CLI composes them.

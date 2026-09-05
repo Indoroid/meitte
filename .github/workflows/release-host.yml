@@ -1,4 +1,4 @@
-# Builds bmoe-cli for desktop hosts when a release is published and attaches the archives to it,
+# Builds meitte-cli for desktop hosts when a release is published and attaches the archives to it,
 # so a benchmark contributor can download one file and run scripts/bench-report.sh without a
 # toolchain (docs/community-benchmarks.md). Same clean-checkout rule as release-apk.yml: nothing
 # from a developer machine rides into a published artifact.
@@ -86,29 +86,29 @@ jobs:
             -DGGML_OPENMP=OFF \
             -DLLAMA_CURL=OFF \
             ${{ matrix.cmake_extra }}
-          cmake --build build --config Release -j --target bmoe-cli
+          cmake --build build --config Release -j --target meitte-cli
 
       - name: Package
         id: pkg
         shell: bash
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          NAME="bmoe-cli-$TAG-${{ matrix.target }}"
+          NAME="meitte-cli-$TAG-${{ matrix.target }}"
           mkdir -p "$NAME"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp build/cli/Release/bmoe-cli.exe "$NAME/"
+            cp build/cli/Release/meitte-cli.exe "$NAME/"
           else
-            cp build/cli/bmoe-cli "$NAME/"
-            strip "$NAME/bmoe-cli" || true
+            cp build/cli/meitte-cli "$NAME/"
+            strip "$NAME/meitte-cli" || true
           fi
           cp LICENSE "$NAME/"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            EXE='.\bmoe-cli.exe'; SHELL_NAME='PowerShell or cmd'
+            EXE='.\meitte-cli.exe'; SHELL_NAME='PowerShell or cmd'
           else
-            EXE='./bmoe-cli'; SHELL_NAME='a terminal'
+            EXE='./meitte-cli'; SHELL_NAME='a terminal'
           fi
           cat > "$NAME/README.txt" <<EOF
-          bmoe-cli $TAG, ${{ matrix.target }}
+          meitte-cli $TAG, ${{ matrix.target }}
 
           This is a command-line program. Double-clicking it opens a console that closes again at
           once, because it was given no model. Open $SHELL_NAME in this folder and run:
@@ -122,8 +122,8 @@ jobs:
 
           Benchmark on this machine, printing the tables for a benchmark-report issue (Linux and
           macOS; on Windows run the protocol command from docs/community-benchmarks.md by hand):
-            BMOE_CLI=\$PWD/bmoe-cli scripts/bench-report.sh /path/to/model.gguf
-          from a checkout of https://github.com/Helldez/BigMoeOnEdge (docs/community-benchmarks.md).
+            BMOE_CLI=\$PWD/meitte-cli scripts/bench-report.sh /path/to/model.gguf
+          from a checkout of https://github.com/Indoroid/meitte (docs/community-benchmarks.md).
           EOF
           if [ "${{ runner.os }}" = "Windows" ]; then
             7z a -tzip "$NAME.zip" "$NAME" > /dev/null
@@ -137,7 +137,7 @@ jobs:
       - name: Smoke
         shell: bash
         run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then build/cli/Release/bmoe-cli.exe --version; else build/cli/bmoe-cli --version; fi
+          if [ "${{ runner.os }}" = "Windows" ]; then build/cli/Release/meitte-cli.exe --version; else build/cli/meitte-cli --version; fi
 
       - name: Upload asset to the release
         if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.upload)

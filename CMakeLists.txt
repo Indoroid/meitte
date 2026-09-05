@@ -16,7 +16,7 @@
 # of CI stay green before the native dependency is fetched.
 cmake_minimum_required(VERSION 3.21)
 
-# The version is declared here and nowhere else in the build: the engine reports it (bmoe-cli
+# The version is declared here and nowhere else in the build: the engine reports it (meitte-cli
 # --version, and the run-parameter preamble of every metrics CSV), so a committed benchmark file
 # says which engine produced it. Keep it in step with CHANGELOG.md and the app's versionName.
 project(bigmoeonedge VERSION 0.23.0 LANGUAGES CXX)
@@ -30,7 +30,7 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 option(BMOE_BUILD_TESTS "Build byte-identity gates and unit tests" ON)
-option(BMOE_BUILD_CLI   "Build the bmoe-cli host tool"              ON)
+option(BMOE_BUILD_CLI   "Build the meitte-cli host tool"            ON)
 # Off by default: diagnostics, not part of the product. They need no llama.cpp, so they can be
 # configured and cross-compiled on their own without building the engine.
 option(BMOE_BUILD_TOOLS "Build standalone diagnostic tools (bmoe-iobench)" OFF)

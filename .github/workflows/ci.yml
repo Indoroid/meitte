@@ -126,9 +126,9 @@ jobs:
             -DGGML_NATIVE=OFF \
             -DGGML_OPENMP=OFF \
             -DLLAMA_CURL=OFF
-          cmake --build build --config Release -j --target bmoe-cli
+          cmake --build build --config Release -j --target meitte-cli
       - name: Smoke
-        run: build/cli/bmoe-cli --version
+        run: build/cli/meitte-cli --version
 
   # Cross-compiles the arm64 engine (the native compile gate) and packages the example
   # APK around it, uploading the APK as an artifact — and attaching it to the release on a
@@ -159,7 +159,7 @@ jobs:
           # r27c == 27.2.12479018, the NDK release-apk.yml builds published APKs with. These two
           # must not drift, or CI validates a build nobody installs.
           ndk-version: r27c
-      - name: Cross-compile bmoe-cli (arm64)
+      - name: Cross-compile meitte-cli (arm64)
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
         run: |
@@ -177,9 +177,9 @@ jobs:
         run: |
           jni=examples/android/app/src/main/jniLibs/arm64-v8a
           mkdir -p "$jni"
-          cp build-android/cli/bmoe-cli "$jni/libbmoe-cli.so"
+          cp build-android/cli/meitte-cli "$jni/libbmoe-cli.so"
           find build-android \( -name 'libggml*.so' -o -name 'libllama*.so' \) -exec cp {} "$jni/" \;
-          # bmoe-cli links the c++_shared STL; ship its runtime from the NDK sysroot.
+          # meitte-cli links the c++_shared STL; ship its runtime from the NDK sysroot.
           cp "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so" "$jni/"
           ls -la "$jni"
       - name: Build debug APK (dev flavor — sideloaded, all-files access)

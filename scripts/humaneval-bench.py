@@ -3,7 +3,7 @@
 
 Where tinyMMLU scores one token after a teacher-forced prompt, this generates: 100 to 200 tokens
 of function body per problem, greedy, so a routing perturbation compounds the way it does in a
-real reply. Each cell is one `bmoe-cli --session` (one model load, warm cache between problems,
+real reply. Each cell is one `meitte-cli --session` (one model load, warm cache between problems,
 KV cleared per problem); the completion is cut at the usual HumanEval stop sequences and graded by
 running the canonical tests in a subprocess. pass@1, deterministic.
 
@@ -11,7 +11,7 @@ The subset is the first N problems of the dataset, declared as such; N is a time
 statistical design, and the number to read is the difference between cells on the same problems.
 
 Usage:
-    python scripts/humaneval-bench.py --data HumanEval.jsonl.gz --cli build/cli/Release/bmoe-cli.exe \
+    python scripts/humaneval-bench.py --data HumanEval.jsonl.gz --cli build/cli/Release/meitte-cli.exe \
         --model M.gguf --out results/ --lambda 0 --lambda 0.15 [--limit 50]
 
 HumanEval.jsonl.gz is data/HumanEval.jsonl.gz from github.com/openai/human-eval (MIT).

@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # Instrumented device-side benchmark run.
-#   args: N MODEL CSV METRICS [extra bmoe-cli flags...]
-# Runs bmoe-cli (which reports prefill/TTFT/load itself) while sampling device pressure at
+#   args: N MODEL CSV METRICS [extra meitte-cli flags...]
+# Runs meitte-cli (which reports prefill/TTFT/load itself) while sampling device pressure at
 # ~1 Hz: peak process memory (VmHWM), free-RAM floor (MemAvailable), and battery + SoC
 # temperature. The prompt lives here so no quoting has to survive adb/PowerShell.
 # Energy note: the battery charge_counter / current_now nodes are root-only on this device,
@@ -20,7 +20,7 @@ cpu_temp()  { for z in /sys/class/thermal/thermal_zone*; do
 
 MEM0=$(memavail); T0=$(batt_temp); CPU0=$(cpu_temp)
 
-LD_LIBRARY_PATH=/data/local/tmp ./bmoe-cli -m "$MODEL" --chatml -n "$N" \
+LD_LIBRARY_PATH=/data/local/tmp ./meitte-cli -m "$MODEL" --chatml -n "$N" \
   -p "Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field" \
   "$@" --csv "$CSV" > /data/local/tmp/cli_stdout.txt 2>/dev/null &
 PID=$!

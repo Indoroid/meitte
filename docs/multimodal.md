@@ -4,10 +4,10 @@ Driftwood can combine a text GGUF with a llama.cpp mtmd projector. The projector
 audio preprocessing and prefill; token generation and MoE expert streaming continue through the
 normal text-model path.
 
-## bmoe-cli
+## meitte-cli
 
 ```bash
-build/cli/bmoe-cli -m model.gguf --mmproj mmproj.gguf \
+build/cli/meitte-cli -m model.gguf --mmproj mmproj.gguf \
   --image photo.png -p "Describe this image."
 ```
 
@@ -18,10 +18,10 @@ build/cli/bmoe-cli -m model.gguf --mmproj mmproj.gguf \
 - `--mtmd-batch-max-tokens N` limits projector output per prefill batch.
 - File-backed media is one-shot only. `--session` rejects these flags rather than ignoring them.
 
-## bmoe-server
+## meitte-server
 
 ```bash
-build/cli/bmoe-server -m model.gguf --mmproj mmproj.gguf --port 8080
+build/cli/meitte-server -m model.gguf --mmproj mmproj.gguf --port 8080
 ```
 
 `POST /v1/chat/completions` accepts ordered OpenAI content parts:
@@ -49,7 +49,7 @@ limited to 32 MiB, all decoded media in one request to 64 MiB, and the HTTP body
 - A request containing media starts from a clear KV cache. It can then be continued with text-only
   turns when the caller preserves the KV; a continuation cannot add or replace media, so reset with
   `clear_kv: true` before sending another image or audio input.
-- `bmoe-server --kv-preserve` retains one incremental conversation. After the image request, send
+- `meitte-server --kv-preserve` retains one incremental conversation. After the image request, send
   only the next user message to `POST /v1/chat/completions`; `{"clear_kv":true}` begins a new
   conversation. This state is server-wide, not isolated per HTTP client.
 - MTP and n-gram speculation are rejected for media requests.

@@ -67,8 +67,8 @@ int main() {
           "generic kwargs preserve JSON literals");
 
     error.clear();
-    check(parse_completion_request(R"({"messages":[{"role":"user","content":"x"}],"clear_kv":false})", true,
-                                   defaults, 128, controls, error) &&
+    check(parse_completion_request(R"({"messages":[{"role":"user","content":"x"}],"clear_kv":false})", true, defaults,
+                                   128, controls, error) &&
               controls.clear_kv && !*controls.clear_kv,
           "clear_kv=false requests an incremental server turn");
 
@@ -111,8 +111,8 @@ int main() {
               true, defaults, 128, controls, error),
           "conflicting reasoning budget aliases are rejected");
     error.clear();
-    check(!parse_completion_request(R"({"messages":[{"role":"user","content":"x"}],"clear_kv":"no"})", true,
-                                    defaults, 128, controls, error),
+    check(!parse_completion_request(R"({"messages":[{"role":"user","content":"x"}],"clear_kv":"no"})", true, defaults,
+                                    128, controls, error),
           "non-boolean clear_kv is rejected");
 
     ApiCompletionRequest default_length;

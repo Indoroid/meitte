@@ -18,14 +18,14 @@ using namespace meitte;
 
 static int failures = 0;
 
-// The trailer is whitespace-separated key=value tokens; asserting the exact token also pins the
-// printf precision, which is part of the contract (values must round the way BMOE_DONE rounds).
+// The preamble and trailer are whitespace-separated key=value tokens; asserting the exact token
+// also pins printf precision, which is part of the contract (values must round predictably).
 static void expect_key(const std::string & line, const char * key, const char * wanted) {
     const std::string pat = std::string(key) + "=" + wanted;
     if (line.find(pat) != std::string::npos) {
-        std::printf("[PASS] summary %s\n", key);
+        std::printf("[PASS] CSV %s\n", key);
     } else {
-        std::printf("[FAIL] summary %s\n  wanted token '%s' in:\n  %s\n", key, pat.c_str(), line.c_str());
+        std::printf("[FAIL] CSV %s\n  wanted token '%s' in:\n  %s\n", key, pat.c_str(), line.c_str());
         ++failures;
     }
 }
@@ -39,7 +39,10 @@ int main(int argc, char ** argv) {
         std::printf("[FAIL] could not open %s for writing\n", out.c_str());
         return 1;
     }
-    RunInfo r; // defaults: the preamble is not what this test is about
+    RunInfo r;
+    r.rope_scaling = "yarn";
+    r.rope_freq_scale = 0.5f;
+    r.yarn_orig_ctx = 16384;
     sink->on_run_info(r);
 
     RunSummary s;                     // value-init: every other field zero, only the five under test are set
@@ -52,9 +55,19 @@ int main(int argc, char ** argv) {
     delete sink; // the destructor closes and flushes the file
 
     std::ifstream in(out);
-    std::string line, summary;
-    while (std::getline(in, line))
+    std::string line, preamble, summary;
+    while (std::getline(in, line)) {
+        if (line.rfind("# model=", 0) == 0) preamble = line;
         if (line.rfind("# summary", 0) == 0) summary = line;
+    }
+    if (preamble.empty()) {
+        std::printf("[FAIL] no '# model=' line in %s\n", out.c_str());
+        ++failures;
+    } else {
+        expect_key(preamble, "rope_scaling", "yarn");
+        expect_key(preamble, "rope_freq_scale", "0.5");
+        expect_key(preamble, "yarn_orig_ctx", "16384");
+    }
     if (summary.empty()) {
         std::printf("[FAIL] no '# summary' line in %s\n", out.c_str());
         ++failures;

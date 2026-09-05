@@ -2,10 +2,10 @@
 # One reproducible host benchmark, printed as a block you can paste into a benchmark-report issue
 # (docs/community-benchmarks.md). Linux first, macOS best effort.
 #
-#   scripts/bench-report.sh MODEL.gguf [extra bmoe-cli flags...]
+#   scripts/bench-report.sh MODEL.gguf [extra meitte-cli flags...]
 #
 # What it does, in order:
-#   1. builds bmoe-cli if build/cli/bmoe-cli is missing (BMOE_CLI overrides the binary);
+#   1. builds meitte-cli if build/cli/meitte-cli is missing (BMOE_CLI overrides the binary);
 #   2. records the machine: CPU, cores, RAM, kernel, the drive the model sits on and its
 #      measured O_DIRECT read rate at 512 KiB requests, straight from the model file — the same
 #      request size the expert stream issues, so the number is the ceiling this engine can see;
@@ -16,13 +16,13 @@
 #   4. parses the CSV trailer the engine writes and prints one markdown block.
 #
 # Env overrides: THREADS (default: min(8, online cores)), N_PREDICT (256), IO_THREADS (4),
-# CACHE_MB (auto), UBATCH (512), BENCH_OUT (.bench-report), BMOE_CLI (build/cli/bmoe-cli).
-# Anything after the model path is passed to bmoe-cli verbatim (e.g. --no-think for gpt-oss,
+# CACHE_MB (auto), UBATCH (512), BENCH_OUT (.bench-report), BMOE_CLI (build/cli/meitte-cli).
+# Anything after the model path is passed to meitte-cli verbatim (e.g. --no-think for gpt-oss,
 # --n-expert-used 6 for the turbo top-k rows).
 set -euo pipefail
 
 if [ $# -lt 1 ] || [ ! -f "$1" ]; then
-    echo "usage: $0 MODEL.gguf [extra bmoe-cli flags...]" >&2
+    echo "usage: $0 MODEL.gguf [extra meitte-cli flags...]" >&2
     exit 2
 fi
 MODEL="$1"; shift
@@ -37,12 +37,12 @@ IO_THREADS="${IO_THREADS:-4}"
 CACHE_MB="${CACHE_MB:-auto}"
 UBATCH="${UBATCH:-512}"   # matches the app: a wider graph reserves buffers the expert cache wants
 BENCH_OUT="${BENCH_OUT:-$ROOT/.bench-report}"
-BMOE_CLI="${BMOE_CLI:-$ROOT/build/cli/bmoe-cli}"
+BMOE_CLI="${BMOE_CLI:-$ROOT/build/cli/meitte-cli}"
 PROMPT="Write a long detailed essay about the history of computing including its origins its key milestones the people involved and the future directions of the field"
 
 # --- 1. binary ------------------------------------------------------------------------------
 if [ ! -x "$BMOE_CLI" ]; then
-    echo "bmoe-cli not found at $BMOE_CLI, building..." >&2
+    echo "meitte-cli not found at $BMOE_CLI, building..." >&2
     "$ROOT/scripts/build-host.sh" >&2
 fi
 ENGINE_VERSION="$("$BMOE_CLI" --version 2>/dev/null | head -1 || echo unknown)"
@@ -91,7 +91,7 @@ LOG="$BENCH_OUT/$TAG.log"
 echo "running: $TAG, $THREADS threads, $IO_THREADS lanes, cache $CACHE_MB, ubatch $UBATCH, $N_PREDICT tokens" >&2
 "$BMOE_CLI" -m "$MODEL" --chatml -n "$N_PREDICT" -t "$THREADS" --ubatch "$UBATCH" \
     --moe-stream --cache-mb "$CACHE_MB" --io-threads "$IO_THREADS" --overlap --dense-weights anon \
-    --csv "$CSV" "$@" -p "$PROMPT" > "$LOG" 2>&1 || { echo "bmoe-cli failed, see $LOG" >&2; exit 1; }
+    --csv "$CSV" "$@" -p "$PROMPT" > "$LOG" 2>&1 || { echo "meitte-cli failed, see $LOG" >&2; exit 1; }
 
 # --- 4. report ------------------------------------------------------------------------------
 # The trailer is whitespace-separated key=value; read by NAME, never by position.

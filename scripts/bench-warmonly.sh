@@ -14,8 +14,8 @@ PLONG="Write a long detailed essay about the history of computing including its 
 cd /data/local/tmp || exit 1
 
 settle() {
-  pkill -f bmoe-cli 2>/dev/null; sleep 2
-  while pgrep -x bmoe-cli >/dev/null 2>&1; do pkill -9 -f bmoe-cli 2>/dev/null; sleep 1; done
+  pkill -f meitte-cli 2>/dev/null; sleep 2
+  while pgrep -x meitte-cli >/dev/null 2>&1; do pkill -9 -f meitte-cli 2>/dev/null; sleep 1; done
   echo "--- cooldown ${1}s ---"; sleep "$1"
 }
 
@@ -24,7 +24,7 @@ run() {
   echo "==================== $TAG (k=$K io=$IO n=$N) ===================="
   echo "start batt=$(dumpsys battery 2>/dev/null | sed -n 's/.*temperature: *//p')dC"
   rm -f "/data/local/tmp/wo_$TAG.csv"
-  LD_LIBRARY_PATH=/data/local/tmp ./bmoe-cli -m "$M" --chatml -n "$N" \
+  LD_LIBRARY_PATH=/data/local/tmp ./meitte-cli -m "$M" --chatml -n "$N" \
     --moe-stream --cache-mb auto --cache-ceil-mb "$CEIL" --io-threads "$IO" -t 4 --overlap \
     --n-expert-used "$K" --csv "/data/local/tmp/wo_$TAG.csv" "$@" 2>&1 \
     | grep -E "cache auto|dense warm-up|generation:|moe-cache:"

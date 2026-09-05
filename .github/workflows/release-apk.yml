@@ -59,7 +59,7 @@ jobs:
 
       # Mirrors scripts/build-android.ps1: same flags, same explicit staging list.
       # Keep the two in sync — this one produces what users actually install.
-      - name: Build bmoe-cli (arm64)
+      - name: Build meitte-cli (arm64)
         run: |
           NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
           cmake -S . -B build-android -G Ninja \
@@ -80,7 +80,7 @@ jobs:
           NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
           JNI=examples/android/app/src/main/jniLibs/arm64-v8a
           mkdir -p "$JNI" && rm -f "$JNI"/*.so
-          cp build-android/cli/bmoe-cli "$JNI/libbmoe-cli.so"
+          cp build-android/cli/meitte-cli "$JNI/libbmoe-cli.so"
           for f in libggml.so libggml-base.so libggml-cpu.so libllama.so libllama-common.so; do
             src=$(find build-android -name "$f" | head -1)
             test -n "$src" || { echo "$f not found"; exit 1; }

@@ -1,4 +1,4 @@
-# Cross-compile bmoe-cli for Android arm64 and stage it into the example app's jniLibs.
+# Cross-compile meitte-cli for Android arm64 and stage it into the example app's jniLibs.
 #
 # The CLI ships as a `lib*.so` and is launched by the app via ProcessBuilder (no JNI) —
 # Android only lets an app execute binaries from its nativeLibraryDir, and only files
@@ -81,7 +81,7 @@ $jni = Join-Path $root "examples\android\app\src\main\jniLibs\$Abi"
 New-Item -ItemType Directory -Force -Path $jni | Out-Null
 Get-ChildItem $jni -Filter "*.so" | Remove-Item -Force
 
-$cli = Join-Path $buildPath "cli\bmoe-cli"
+$cli = Join-Path $buildPath "cli\meitte-cli"
 Copy-Item $cli (Join-Path $jni "libbmoe-cli.so") -Force
 foreach ($name in $libs) {
     $src = Get-ChildItem -Path $buildPath -Recurse -Filter $name | Select-Object -First 1
@@ -89,7 +89,7 @@ foreach ($name in $libs) {
     Copy-Item $src.FullName (Join-Path $jni $name) -Force
 }
 
-# bmoe-cli links the c++_shared STL, so its runtime must ride along in the APK —
+# meitte-cli links the c++_shared STL, so its runtime must ride along in the APK —
 # it lives in the NDK sysroot, not the build tree.
 $stl = Join-Path $ndk "toolchains\llvm\prebuilt\windows-x86_64\sysroot\usr\lib\aarch64-linux-android\libc++_shared.so"
 Copy-Item $stl (Join-Path $jni "libc++_shared.so") -Force

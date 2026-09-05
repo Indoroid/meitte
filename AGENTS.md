@@ -19,7 +19,7 @@ we do not fork llama.cpp. See `docs/architecture.md` and `docs/seam.md`.
 - `core/src/moe/` — `gguf_offsets`, `arch_registry`, `expert_stream_source`, `router_hook`;
   `dense_weights` (the non-expert weight policy: mmap / warm / anon, plus the residency sensor).
 - `core/src/engine/runtime.cpp` — composition + greedy generation loop.
-- `cli/main.cpp` — `bmoe-cli`; the ONLY place environment variables are read.
+- `cli/main.cpp` — `meitte-cli`; the ONLY place environment variables are read.
 - `third_party/llama.cpp` — stock upstream submodule.
 - `tests/` — byte-identity gates. `examples/android/` — the demo APK.
 

@@ -135,7 +135,7 @@ see the ordering warning below.
 Embedders that link the engine can also resize the cache directly with
 `Session::set_cache_budget_mb(int)` — for an app's own memory-pressure callback. It must be called
 between generations (never during a decode); it evicts to the new budget immediately. The Android
-example does not use it: it runs `bmoe-cli` as a subprocess, so its "Auto" cache setting simply
+example does not use it: it runs `meitte-cli` as a subprocess, so its "Auto" cache setting simply
 passes `--cache-mb auto` and the load-time sizing above applies.
 
 ## Gate

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <utility>
 
 namespace meitte {
@@ -9,9 +10,8 @@ namespace meitte {
 namespace {
 
 std::string lower(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
     return value;
 }
 
@@ -19,24 +19,52 @@ std::string lower(std::string value) {
 
 const char * kv_cache_type_name(KvCacheType type) {
     switch (type) {
-    case KvCacheType::F32: return "f32";
-    case KvCacheType::F16: return "f16";
-    case KvCacheType::BF16: return "bf16";
-    case KvCacheType::Q8_0: return "q8_0";
-    case KvCacheType::Q5_0: return "q5_0";
-    case KvCacheType::Q5_1: return "q5_1";
-    case KvCacheType::Q4_0: return "q4_0";
-    case KvCacheType::Q4_1: return "q4_1";
-    case KvCacheType::IQ4_NL: return "iq4_nl";
+    case KvCacheType::F32:
+        return "f32";
+    case KvCacheType::F16:
+        return "f16";
+    case KvCacheType::BF16:
+        return "bf16";
+    case KvCacheType::Q8_0:
+        return "q8_0";
+    case KvCacheType::Q5_0:
+        return "q5_0";
+    case KvCacheType::Q5_1:
+        return "q5_1";
+    case KvCacheType::Q4_0:
+        return "q4_0";
+    case KvCacheType::Q4_1:
+        return "q4_1";
+    case KvCacheType::IQ4_NL:
+        return "iq4_nl";
     }
     return "f16";
 }
 
 const char * flash_attention_mode_name(FlashAttentionMode mode) {
     switch (mode) {
-    case FlashAttentionMode::Auto: return "auto";
-    case FlashAttentionMode::Enabled: return "on";
-    case FlashAttentionMode::Disabled: return "off";
+    case FlashAttentionMode::Auto:
+        return "auto";
+    case FlashAttentionMode::Enabled:
+        return "on";
+    case FlashAttentionMode::Disabled:
+        return "off";
+    }
+    return "auto";
+}
+
+const char * rope_scaling_mode_name(RopeScalingMode mode) {
+    switch (mode) {
+    case RopeScalingMode::Auto:
+        return "auto";
+    case RopeScalingMode::None:
+        return "none";
+    case RopeScalingMode::Linear:
+        return "linear";
+    case RopeScalingMode::Yarn:
+        return "yarn";
+    case RopeScalingMode::LongRope:
+        return "longrope";
     }
     return "auto";
 }
@@ -44,16 +72,26 @@ const char * flash_attention_mode_name(FlashAttentionMode mode) {
 bool parse_kv_cache_type(const std::string & value, KvCacheType & out) {
     const std::string v = lower(value);
     KvCacheType parsed;
-    if (v == "f32") parsed = KvCacheType::F32;
-    else if (v == "f16") parsed = KvCacheType::F16;
-    else if (v == "bf16") parsed = KvCacheType::BF16;
-    else if (v == "q8_0") parsed = KvCacheType::Q8_0;
-    else if (v == "q5_0") parsed = KvCacheType::Q5_0;
-    else if (v == "q5_1") parsed = KvCacheType::Q5_1;
-    else if (v == "q4_0") parsed = KvCacheType::Q4_0;
-    else if (v == "q4_1") parsed = KvCacheType::Q4_1;
-    else if (v == "iq4_nl") parsed = KvCacheType::IQ4_NL;
-    else return false;
+    if (v == "f32")
+        parsed = KvCacheType::F32;
+    else if (v == "f16")
+        parsed = KvCacheType::F16;
+    else if (v == "bf16")
+        parsed = KvCacheType::BF16;
+    else if (v == "q8_0")
+        parsed = KvCacheType::Q8_0;
+    else if (v == "q5_0")
+        parsed = KvCacheType::Q5_0;
+    else if (v == "q5_1")
+        parsed = KvCacheType::Q5_1;
+    else if (v == "q4_0")
+        parsed = KvCacheType::Q4_0;
+    else if (v == "q4_1")
+        parsed = KvCacheType::Q4_1;
+    else if (v == "iq4_nl")
+        parsed = KvCacheType::IQ4_NL;
+    else
+        return false;
     out = parsed;
     return true;
 }
@@ -61,10 +99,33 @@ bool parse_kv_cache_type(const std::string & value, KvCacheType & out) {
 bool parse_flash_attention_mode(const std::string & value, FlashAttentionMode & out) {
     const std::string v = lower(value);
     FlashAttentionMode parsed;
-    if (v == "auto") parsed = FlashAttentionMode::Auto;
-    else if (v == "on") parsed = FlashAttentionMode::Enabled;
-    else if (v == "off") parsed = FlashAttentionMode::Disabled;
-    else return false;
+    if (v == "auto")
+        parsed = FlashAttentionMode::Auto;
+    else if (v == "on")
+        parsed = FlashAttentionMode::Enabled;
+    else if (v == "off")
+        parsed = FlashAttentionMode::Disabled;
+    else
+        return false;
+    out = parsed;
+    return true;
+}
+
+bool parse_rope_scaling_mode(const std::string & value, RopeScalingMode & out) {
+    const std::string v = lower(value);
+    RopeScalingMode parsed;
+    if (v == "auto")
+        parsed = RopeScalingMode::Auto;
+    else if (v == "none")
+        parsed = RopeScalingMode::None;
+    else if (v == "linear")
+        parsed = RopeScalingMode::Linear;
+    else if (v == "yarn")
+        parsed = RopeScalingMode::Yarn;
+    else if (v == "longrope")
+        parsed = RopeScalingMode::LongRope;
+    else
+        return false;
     out = parsed;
     return true;
 }
@@ -109,6 +170,26 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.n_ctx <= 0) {
         return fail("n_ctx must be positive");
     }
+    // These are llama.cpp sentinels, not Meitte defaults: zero defers the frequency to the GGUF
+    // and -1 defers a YaRN tuning constant to llama.cpp/model metadata. Reject NaN and infinity
+    // here, before a context is constructed, because they otherwise reach the RoPE graph unchecked.
+    const RopeConfig & rope = cfg.rope;
+    if (!std::isfinite(rope.freq_base) || rope.freq_base < 0.0f)
+        return fail("rope.freq_base must be finite and >= 0 (0 = model default)");
+    if (!std::isfinite(rope.freq_scale) || rope.freq_scale < 0.0f)
+        return fail("rope.freq_scale must be finite and >= 0 (0 = model default)");
+    const auto valid_yarn_scalar = [](float value) {
+        return std::isfinite(value) && (value == -1.0f || value >= 0.0f);
+    };
+    if (!valid_yarn_scalar(rope.yarn_ext_factor))
+        return fail("rope.yarn_ext_factor must be -1 (model default) or a finite value >= 0");
+    if (!valid_yarn_scalar(rope.yarn_attn_factor))
+        return fail("rope.yarn_attn_factor must be -1 (model default) or a finite value >= 0");
+    if (!valid_yarn_scalar(rope.yarn_beta_fast))
+        return fail("rope.yarn_beta_fast must be -1 (model default) or a finite value >= 0");
+    if (!valid_yarn_scalar(rope.yarn_beta_slow))
+        return fail("rope.yarn_beta_slow must be -1 (model default) or a finite value >= 0");
+    if (rope.yarn_orig_ctx < 0) return fail("rope.yarn_orig_ctx must be >= 0 (0 = model default)");
     if (cfg.n_batch <= 0) {
         return fail("n_batch must be positive");
     }
@@ -138,8 +219,7 @@ ValidationResult validate(const RunConfig & cfg) {
         return fail("reasoning_effort requires thinking to be enabled (use 'none' to disable reasoning)");
     }
     if (cfg.reasoning_effort.size() > 64) return fail("reasoning_effort must be at most 64 bytes");
-    if (cfg.reasoning_budget_tokens < -1)
-        return fail("reasoning_budget_tokens must be -1 (unrestricted) or >= 0");
+    if (cfg.reasoning_budget_tokens < -1) return fail("reasoning_budget_tokens must be -1 (unrestricted) or >= 0");
     for (const TensorBufferOverride & override : cfg.tensor_buffer_overrides) {
         if (override.pattern.empty() || override.buffer_type.empty())
             return fail("tensor buffer overrides require both a pattern and a buffer type");

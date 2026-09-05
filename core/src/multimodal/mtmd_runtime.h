@@ -20,10 +20,7 @@ struct MtmdPrefillResult {
 
 class MtmdRuntime {
 public:
-    bool init(const MultimodalConfig & cfg,
-              const llama_model * model,
-              int n_threads,
-              std::string & error);
+    bool init(const MultimodalConfig & cfg, const llama_model * model, int n_threads, std::string & error);
     void reset();
     bool enabled() const { return ctx_ != nullptr; }
     const char * marker() const;

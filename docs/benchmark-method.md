@@ -13,7 +13,7 @@ behind the published figures is named [at the end](#where-the-published-numbers-
 ## The run
 
 ```bash
-bmoe-cli -m MODEL.gguf --moe-stream --cache-mb auto --io-threads 4 -t 4 -n 256 \
+meitte-cli -m MODEL.gguf --moe-stream --cache-mb auto --io-threads 4 -t 4 -n 256 \
     --overlap --dense-weights anon --csv run.csv -p "..."
 ```
 

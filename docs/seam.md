@@ -69,7 +69,17 @@ It is rejected with `--moe-stream`, because an arbitrary regex could place a str
 different buffer and invalidate the native-offset rebinding contract. `--list-buffer-types` reports
 the buffer names registered by the current build.
 
-## 3. The expert-ready hook (fork extension)
+## 3. Context and RoPE controls
+
+The context adapter writes the public `llama_context_params` fields directly: `n_ctx`,
+`rope_scaling_type`, `rope_freq_base`, `rope_freq_scale`, and the YaRN factors/original context.
+`--rope-scaling auto` leaves the method unspecified so llama.cpp selects the GGUF-trained method;
+the explicit methods are `none`, `linear`, `yarn`, and `longrope`. LongRope remains model-owned:
+llama.cpp selects the GGUF's long/short factor tensors from the configured context length, so this
+project does not fabricate factors or special-case model families. These controls change positional
+interpretation, not model storage, tensor layout, expert routing, or the streaming seam.
+
+## 4. The expert-ready hook (fork extension)
 
 Sections 1 and 2 are enough for the *serial* streamer: block on the expert reads, then let
 the layer compute. Overlapping the two — reading a token's experts while the same token's
@@ -191,7 +201,7 @@ returns. This is how `ggml_backend_sched` implements the eval-callback today
 
 ## Upgrading llama.cpp
 
-Because the submodule pins the `bmoe/expert-ready-hook` fork branch (section 3), a bump
+Because the submodule pins the `bmoe/expert-ready-hook` fork branch (section 4), a bump
 rebases that 1-commit branch onto the new upstream tag, re-pushes it, and re-pins:
 
 ```bash

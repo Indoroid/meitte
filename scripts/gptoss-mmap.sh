@@ -16,7 +16,7 @@ for K in 4 2; do
   TAG="mmap_k${K}"
   echo "==================== $TAG ====================" >> "$OUT"
   sleep "$COOLDOWN"
-  LD_LIBRARY_PATH=/data/local/tmp ./bmoe-cli -m "$M" --chatml --no-think -c 2048 -n 24 \
+  LD_LIBRARY_PATH=/data/local/tmp ./meitte-cli -m "$M" --chatml --no-think -c 2048 -n 24 \
     --n-expert-used "$K" --csv /data/local/tmp/gptoss_${TAG}.csv \
     -p "$P" >> "$OUT" 2>/dev/null
   echo "" >> "$OUT"

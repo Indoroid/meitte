@@ -4,10 +4,7 @@
 
 namespace meitte {
 
-bool MtmdRuntime::init(const MultimodalConfig & cfg,
-                       const llama_model * model,
-                       int n_threads,
-                       std::string & error) {
+bool MtmdRuntime::init(const MultimodalConfig & cfg, const llama_model * model, int n_threads, std::string & error) {
     reset();
     if (!cfg.enabled()) return true;
 
@@ -64,8 +61,7 @@ MtmdPrefillResult MtmdRuntime::prefill(llama_context * lctx,
             return out;
         }
         mtmd_helper_bitmap_wrapper decoded = mtmd_helper_bitmap_init_from_buf(
-            ctx_.get(), input.bytes.data(), input.bytes.size(), /*placeholder*/ false,
-            mtmd_helper_init_opt_default());
+            ctx_.get(), input.bytes.data(), input.bytes.size(), /*placeholder*/ false, mtmd_helper_init_opt_default());
         if (!decoded.bitmap) {
             out.error = "failed to decode media: " + input.name;
             return out;
@@ -87,8 +83,7 @@ MtmdPrefillResult MtmdRuntime::prefill(llama_context * lctx,
     text.add_special = true;
     text.parse_special = true;
 
-    const int32_t rc = mtmd_tokenize(ctx_.get(), chunks.get(), &text,
-                                     bitmap_ptrs.data(), bitmap_ptrs.size());
+    const int32_t rc = mtmd_tokenize(ctx_.get(), chunks.get(), &text, bitmap_ptrs.data(), bitmap_ptrs.size());
     if (rc == 1) {
         out.error = "number of media markers does not match supplied media";
         return out;
@@ -111,10 +106,9 @@ MtmdPrefillResult MtmdRuntime::prefill(llama_context * lctx,
     }
 
     llama_pos new_n_past = 0;
-    const int32_t eval_rc = mtmd_helper_eval_chunks(ctx_.get(), lctx, chunks.get(),
-                                                    /*n_past*/ 0, /*seq_id*/ 0,
-                                                    n_batch, /*logits_last*/ true,
-                                                    &new_n_past);
+    const int32_t eval_rc =
+        mtmd_helper_eval_chunks(ctx_.get(), lctx, chunks.get(),
+                                /*n_past*/ 0, /*seq_id*/ 0, n_batch, /*logits_last*/ true, &new_n_past);
     if (eval_rc != 0) {
         out.error = "multimodal prefill decode failed (mtmd code " + std::to_string(eval_rc) + ")";
         return out;

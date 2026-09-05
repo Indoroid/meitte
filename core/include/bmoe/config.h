@@ -56,10 +56,37 @@ enum class FlashAttentionMode {
     Disabled,
 };
 
+// The public llama.cpp context API supports these RoPE scaling selections. `Auto` deliberately
+// maps to its UNSPECIFIED sentinel so the GGUF's trained scaling method remains authoritative.
+// LongRope is model-owned: it only has an effect when the GGUF supplies long/short factor tensors.
+enum class RopeScalingMode {
+    Auto,
+    None,
+    Linear,
+    Yarn,
+    LongRope,
+};
+
+// RoPE controls passed unchanged to llama_context_params. Zero and -1 retain llama.cpp's sentinel
+// meanings rather than duplicating per-architecture defaults here. `n_ctx` selects the allocated
+// context; this config controls how positions inside a larger context are interpreted.
+struct RopeConfig {
+    RopeScalingMode scaling = RopeScalingMode::Auto;
+    float freq_base = 0.0f;      // 0 = model metadata
+    float freq_scale = 0.0f;     // 0 = model metadata; 1 / desired extension factor for --rope-scale
+    float yarn_ext_factor = -1;  // -1 = llama.cpp/model default
+    float yarn_attn_factor = -1; // -1 = llama.cpp/model default
+    float yarn_beta_fast = -1;   // -1 = llama.cpp/model default
+    float yarn_beta_slow = -1;   // -1 = llama.cpp/model default
+    int yarn_orig_ctx = 0;       // 0 = model training/original context
+};
+
 const char * kv_cache_type_name(KvCacheType type);
 const char * flash_attention_mode_name(FlashAttentionMode mode);
+const char * rope_scaling_mode_name(RopeScalingMode mode);
 bool parse_kv_cache_type(const std::string & value, KvCacheType & out);
 bool parse_flash_attention_mode(const std::string & value, FlashAttentionMode & out);
+bool parse_rope_scaling_mode(const std::string & value, RopeScalingMode & out);
 
 // MoE expert-selective streaming knobs.
 struct MoeStreamConfig {
@@ -413,6 +440,7 @@ struct RunConfig {
     KvCacheType cache_type_k = KvCacheType::F16;
     KvCacheType cache_type_v = KvCacheType::F16;
     FlashAttentionMode flash_attention = FlashAttentionMode::Auto;
+    RopeConfig rope;
 
     // Render the chat template with reasoning enabled. Passed to the template as the
     // `enable_thinking` kwarg, so a reasoning model (Qwen3, thinking Gemma, …) only emits
@@ -428,7 +456,7 @@ struct RunConfig {
     // preserve_reasoning kwarg for templates that support retaining thought in history.
     std::optional<bool> reasoning_preserve;
 
-    // Keep the prior turn's KV state in bmoe-cli --session. The HTTP server has an equivalent
+    // Keep the prior turn's KV state in meitte-cli --session. The HTTP server has an equivalent
     // mode, but preserves per-server state rather than sharing it through RunConfig.
     bool kv_preserve = false;
 

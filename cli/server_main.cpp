@@ -1,4 +1,4 @@
-// bmoe-server — HTTP server mode for BigMoeOnEdge.
+// meitte-server — HTTP server mode for Meitte.
 //
 // Loads a model once (like --session) and serves inferences over HTTP on a configurable
 // port. Exposes an OpenAI-compatible REST API:
@@ -11,9 +11,9 @@
 // The expert cache and model stay loaded between requests — the same amortisation
 // the --session mode provides.
 //
-// Usage: bmoe-server -m <model.gguf> [--port N] [--host ADDR] [options]
+// Usage: meitte-server -m <model.gguf> [--port N] [--host ADDR] [options]
 //
-// All bmoe-cli streaming/flags work the same way (--moe-stream, --cache-mb, etc.)
+// All meitte-cli streaming/flags work the same way (--moe-stream, --cache-mb, etc.)
 // except --prompt and --session.
 #include "bmoe/config.h"
 #include "bmoe/decode_trace.h"
@@ -90,7 +90,7 @@ static bool is_extension(const std::string & full, const std::string & previous)
     return full.size() >= previous.size() && full.compare(0, previous.size(), previous) == 0;
 }
 
-// Byte-compatible with bmoe-cli --progress so existing telemetry consumers can observe an HTTP
+// Byte-compatible with meitte-cli --progress so existing telemetry consumers can observe an HTTP
 // generation without learning another format. One ProgressDelta lives per request.
 static void emit_progress_line(const TokenMetrics & m, ProgressDelta & state) {
     if (m.read_bytes || m.io_ms > 0.0)
@@ -1106,9 +1106,9 @@ static void handle_request(int fd, const HttpRequest & req, ServerState & state)
 
     // GET /
     if (req.method == "GET" && (req.path == "/" || req.path == "")) {
-        std::string body = "{\"name\":\"bmoe-server\","
+        std::string body = "{\"name\":\"meitte-server\","
                            "\"version\":\"" BMOE_VERSION "\","
-                           "\"description\":\"BigMoeOnEdge streaming inference server\"}";
+                           "\"description\":\"Meitte streaming inference server\"}";
         send_response(fd, 200, "OK", "application/json", body, ka);
         return;
     }
@@ -1127,7 +1127,7 @@ static void handle_request(int fd, const HttpRequest & req, ServerState & state)
                            "\","
                            "\"object\":\"model\","
                            "\"created\":0,"
-                           "\"owned_by\":\"bmoe\","
+                           "\"owned_by\":\"meitte\","
                            "\"meta\":{"
                            "\"arch\":\"" +
                            json_escape(state.session->arch()) +
@@ -1170,7 +1170,7 @@ static void handle_completions(int fd, const HttpRequest & req, ServerState & st
         return;
     }
     if (!api.media.empty() && !state.session_cfg.multimodal.enabled()) {
-        send_json_error(fd, 400, "Multimodal content requires bmoe-server --mmproj PATH", false);
+        send_json_error(fd, 400, "Multimodal content requires meitte-server --mmproj PATH", false);
         return;
     }
 
@@ -1206,8 +1206,7 @@ static void handle_completions(int fd, const HttpRequest & req, ServerState & st
         greq.think ? api.reasoning_budget_tokens.value_or(state.srv_cfg.default_reasoning_budget_tokens) : -1;
     greq.chat_template_kwargs = std::move(api.chat_template_kwargs);
     if (state.srv_cfg.default_reasoning_preserve && !greq.chat_template_kwargs.count("preserve_reasoning"))
-        greq.chat_template_kwargs["preserve_reasoning"] =
-            *state.srv_cfg.default_reasoning_preserve ? "true" : "false";
+        greq.chat_template_kwargs["preserve_reasoning"] = *state.srv_cfg.default_reasoning_preserve ? "true" : "false";
     greq.override_sampling = true;
     greq.sampling = api.sampling;
     long created = static_cast<long>(std::time(nullptr));
@@ -1457,10 +1456,19 @@ static void print_usage(const char * argv0) {
                 "                          remote access)\n"
                 "      --max-request-mb N  maximum HTTP request body (default 64 MiB)\n"
                 "\n"
-                "  Model and generation (same behavior as bmoe-cli):\n"
+                "  Model and generation (same behavior as meitte-cli):\n"
                 "  -n, --n-predict N       maximum generated tokens per request (default 128)\n"
                 "  -t, --threads N         CPU compute threads (default 4)\n"
                 "  -c, --ctx-size N        model context size (default 2048)\n"
+                "      --rope-scaling MODE  RoPE method: auto|none|linear|yarn|longrope (default auto)\n"
+                "      --rope-scale N       context extension factor; sets RoPE frequency scale to 1/N\n"
+                "      --rope-freq-base N   RoPE frequency base; 0 keeps GGUF metadata\n"
+                "      --rope-freq-scale N  RoPE frequency scale; 0 keeps GGUF metadata\n"
+                "      --yarn-orig-ctx N    YaRN original context; 0 keeps GGUF metadata\n"
+                "      --yarn-ext-factor N  YaRN extrapolation mix; -1 keeps GGUF metadata\n"
+                "      --yarn-attn-factor N YaRN attention magnitude; -1 keeps GGUF metadata\n"
+                "      --yarn-beta-fast N   YaRN low correction dimension; -1 keeps GGUF metadata\n"
+                "      --yarn-beta-slow N   YaRN high correction dimension; -1 keeps GGUF metadata\n"
                 "      --batch-size N      logical prompt-prefill batch size (default 2048)\n"
                 "      --ubatch-size N     maximum physical graph width (default 512; --ubatch alias)\n"
                 "      --n-expert-used N   override routed experts per token; 0 uses the model default\n"
@@ -1614,6 +1622,28 @@ int main(int argc, char ** argv) {
             cfg.n_threads = std::atoi(next("-t"));
         else if (a == "-c" || a == "--ctx-size")
             cfg.n_ctx = std::atoi(next("-c"));
+        else if (a == "--rope-scaling") {
+            if (!parse_rope_scaling_mode(next("--rope-scaling"), cfg.rope.scaling)) {
+                std::fprintf(stderr, "meitte-server: --rope-scaling expects auto|none|linear|yarn|longrope\n");
+                return 2;
+            }
+        } else if (a == "--rope-scale") {
+            const float scale = (float) std::atof(next("--rope-scale"));
+            cfg.rope.freq_scale = 1.0f / scale;
+        } else if (a == "--rope-freq-base")
+            cfg.rope.freq_base = (float) std::atof(next("--rope-freq-base"));
+        else if (a == "--rope-freq-scale")
+            cfg.rope.freq_scale = (float) std::atof(next("--rope-freq-scale"));
+        else if (a == "--yarn-orig-ctx")
+            cfg.rope.yarn_orig_ctx = std::atoi(next("--yarn-orig-ctx"));
+        else if (a == "--yarn-ext-factor")
+            cfg.rope.yarn_ext_factor = (float) std::atof(next("--yarn-ext-factor"));
+        else if (a == "--yarn-attn-factor")
+            cfg.rope.yarn_attn_factor = (float) std::atof(next("--yarn-attn-factor"));
+        else if (a == "--yarn-beta-fast")
+            cfg.rope.yarn_beta_fast = (float) std::atof(next("--yarn-beta-fast"));
+        else if (a == "--yarn-beta-slow")
+            cfg.rope.yarn_beta_slow = (float) std::atof(next("--yarn-beta-slow"));
         else if (a == "--batch-size")
             cfg.n_batch = std::atoi(next("--batch-size"));
         else if (a == "--ubatch" || a == "--ubatch-size")
@@ -1623,7 +1653,7 @@ int main(int argc, char ** argv) {
         else if (a == "-ot" || a == "--override-tensor") {
             std::string error;
             if (!parse_tensor_buffer_overrides(next("--override-tensor"), cfg.tensor_buffer_overrides, error)) {
-                std::fprintf(stderr, "bmoe-server: %s\n", error.c_str());
+                std::fprintf(stderr, "meitte-server: %s\n", error.c_str());
                 return 2;
             }
         } else if (a == "--list-buffer-types")
@@ -1639,7 +1669,7 @@ int main(int argc, char ** argv) {
         else if (a == "--mtp" || a == "--ngram") {
             const DraftSource want = a == "--mtp" ? DraftSource::mtp : DraftSource::ngram;
             if (cfg.spec.enabled() && cfg.spec.source != want) {
-                std::fprintf(stderr, "bmoe-server: --mtp and --ngram are exclusive; choose one.\n");
+                std::fprintf(stderr, "meitte-server: --mtp and --ngram are exclusive; choose one.\n");
                 return 2;
             }
             cfg.spec.source = want;
@@ -1653,14 +1683,14 @@ int main(int argc, char ** argv) {
             srv.completion_chatml = true;
         else if (a == "--system-prompt") {
             if (system_prompt_file_seen) {
-                std::fprintf(stderr, "bmoe-server: --system-prompt conflicts with --system-prompt-file\n");
+                std::fprintf(stderr, "meitte-server: --system-prompt conflicts with --system-prompt-file\n");
                 return 2;
             }
             cfg.system_prompt = next("--system-prompt");
             system_prompt_seen = true;
         } else if (a == "--system-prompt-file") {
             if (system_prompt_seen) {
-                std::fprintf(stderr, "bmoe-server: --system-prompt conflicts with --system-prompt-file\n");
+                std::fprintf(stderr, "meitte-server: --system-prompt conflicts with --system-prompt-file\n");
                 return 2;
             }
             system_prompt_file = next("--system-prompt-file");
@@ -1668,7 +1698,7 @@ int main(int argc, char ** argv) {
         } else if (a == "--reasoning-effort") {
             cfg.reasoning_effort = next("--reasoning-effort");
             if (cfg.reasoning_effort.empty()) {
-                std::fprintf(stderr, "bmoe-server: --reasoning-effort cannot be empty\n");
+                std::fprintf(stderr, "meitte-server: --reasoning-effort cannot be empty\n");
                 return 2;
             }
             reasoning_effort_seen = true;
@@ -1682,31 +1712,31 @@ int main(int argc, char ** argv) {
             srv.kv_preserve = true;
         else if (a == "--chat-template") {
             if (chat_template_file_seen) {
-                std::fprintf(stderr, "bmoe-server: --chat-template conflicts with --chat-template-file\n");
+                std::fprintf(stderr, "meitte-server: --chat-template conflicts with --chat-template-file\n");
                 return 2;
             }
             cfg.chat_template = next("--chat-template");
             chat_template_seen = true;
         } else if (a == "--chat-template-file") {
             if (chat_template_seen) {
-                std::fprintf(stderr, "bmoe-server: --chat-template conflicts with --chat-template-file\n");
+                std::fprintf(stderr, "meitte-server: --chat-template conflicts with --chat-template-file\n");
                 return 2;
             }
             chat_template_file = next("--chat-template-file");
             chat_template_file_seen = true;
         } else if (a == "--cache-type-k" || a == "-ctk") {
             if (!parse_kv_cache_type(next("--cache-type-k"), cfg.cache_type_k)) {
-                std::fprintf(stderr, "bmoe-server: invalid --cache-type-k\n");
+                std::fprintf(stderr, "meitte-server: invalid --cache-type-k\n");
                 return 2;
             }
         } else if (a == "--cache-type-v" || a == "-ctv") {
             if (!parse_kv_cache_type(next("--cache-type-v"), cfg.cache_type_v)) {
-                std::fprintf(stderr, "bmoe-server: invalid --cache-type-v\n");
+                std::fprintf(stderr, "meitte-server: invalid --cache-type-v\n");
                 return 2;
             }
         } else if (a == "--flash-attn") {
             if (!parse_flash_attention_mode(next("--flash-attn"), cfg.flash_attention)) {
-                std::fprintf(stderr, "bmoe-server: --flash-attn expects auto|on|off\n");
+                std::fprintf(stderr, "meitte-server: --flash-attn expects auto|on|off\n");
                 return 2;
             }
         } else if (a == "--progress")
@@ -1759,11 +1789,11 @@ int main(int argc, char ** argv) {
             else if (m == "ahwb")
                 cfg.moe.dense_weights = DenseWeightsMode::Pinned;
             else {
-                std::fprintf(stderr, "bmoe-server: --dense-weights expects mmap|warm|anon|ahwb\n");
+                std::fprintf(stderr, "meitte-server: --dense-weights expects mmap|warm|anon|ahwb\n");
                 return 2;
             }
         }
-        // Deprecated bmoe-cli aliases retained for command-line parity.
+        // Deprecated meitte-cli aliases retained for command-line parity.
         else if (a == "--no-warm-dense")
             cfg.moe.dense_weights = DenseWeightsMode::Mmap;
         else if (a == "--dense-odirect")
@@ -1808,7 +1838,7 @@ int main(int argc, char ** argv) {
             std::printf("%s\n", meitte::version());
             return 0;
         } else {
-            std::fprintf(stderr, "bmoe-server: unknown arg: %s\n", a.c_str());
+            std::fprintf(stderr, "meitte-server: unknown arg: %s\n", a.c_str());
             print_usage(argv[0]);
             return 1;
         }
@@ -1816,11 +1846,11 @@ int main(int argc, char ** argv) {
 
     std::string file_error;
     if (system_prompt_file_seen && !read_text_file(system_prompt_file, cfg.system_prompt, file_error)) {
-        std::fprintf(stderr, "bmoe-server: %s\n", file_error.c_str());
+        std::fprintf(stderr, "meitte-server: %s\n", file_error.c_str());
         return 2;
     }
     if (chat_template_file_seen && !read_text_file(chat_template_file, cfg.chat_template, file_error)) {
-        std::fprintf(stderr, "bmoe-server: %s\n", file_error.c_str());
+        std::fprintf(stderr, "meitte-server: %s\n", file_error.c_str());
         return 2;
     }
     const std::string normalized_effort = normalize_reasoning_effort(cfg.reasoning_effort);
@@ -1829,7 +1859,7 @@ int main(int argc, char ** argv) {
         cfg.think = false;
         cfg.reasoning_effort.clear();
     } else if (no_think_seen && reasoning_effort_seen) {
-        std::fprintf(stderr, "bmoe-server: --no-think conflicts with --reasoning-effort %s\n",
+        std::fprintf(stderr, "meitte-server: --no-think conflicts with --reasoning-effort %s\n",
                      cfg.reasoning_effort.c_str());
         return 2;
     }
@@ -1872,7 +1902,7 @@ int main(int argc, char ** argv) {
     if (list_buffer_types) {
         const std::vector<std::string> types = Session::available_tensor_buffer_types();
         if (types.empty()) {
-            std::fprintf(stderr, "bmoe-server: no llama.cpp buffer types are registered\n");
+            std::fprintf(stderr, "meitte-server: no llama.cpp buffer types are registered\n");
             return 1;
         }
         for (const std::string & type : types)
@@ -1885,16 +1915,16 @@ int main(int argc, char ** argv) {
         return 1;
     }
     if (srv.port < 1 || srv.port > 65535) {
-        std::fprintf(stderr, "bmoe-server: --port must be in 1..65535\n");
+        std::fprintf(stderr, "meitte-server: --port must be in 1..65535\n");
         return 1;
     }
     if (srv.max_request_mb < 1 || srv.max_request_mb > 1024) {
-        std::fprintf(stderr, "bmoe-server: --max-request-mb must be in 1..1024\n");
+        std::fprintf(stderr, "meitte-server: --max-request-mb must be in 1..1024\n");
         return 1;
     }
 
     // Load template support once. Chat requests always use it; raw completions use it only when
-    // --chatml was supplied, matching bmoe-cli without requiring a second model session.
+    // --chatml was supplied, matching meitte-cli without requiring a second model session.
     cfg.chatml = true;
 
     ValidationResult vr = validate(cfg);
@@ -1904,7 +1934,7 @@ int main(int argc, char ** argv) {
     }
 
     // ── Open the session ──────────────────────────────────────────────
-    std::fprintf(stderr, "bmoe-server: loading model %s%s%s ...\n", cfg.model_path.c_str(),
+    std::fprintf(stderr, "meitte-server: loading model %s%s%s ...\n", cfg.model_path.c_str(),
                  cfg.multimodal.enabled() ? " with mmproj " : "",
                  cfg.multimodal.enabled() ? cfg.multimodal.mmproj_path.c_str() : "");
 
@@ -1946,19 +1976,19 @@ int main(int argc, char ** argv) {
     std::string error;
     std::unique_ptr<Session> session = Session::open(sc, error, route_trace.get(), compute_trace.get(), io_trace.get());
     if (!session) {
-        std::fprintf(stderr, "bmoe-server: failed to load model: %s\n", error.c_str());
+        std::fprintf(stderr, "meitte-server: failed to load model: %s\n", error.c_str());
         return 1;
     }
 
-    std::fprintf(stderr, "bmoe-server: model loaded: arch=%s, n_ctx=%d, think_ctl=%s, n_expert_used=%d\n",
+    std::fprintf(stderr, "meitte-server: model loaded: arch=%s, n_ctx=%d, think_ctl=%s, n_expert_used=%d\n",
                  session->arch().c_str(), session->n_ctx(), think_control_name(session->think_control()),
                  session->n_expert_used());
-    std::fprintf(stderr, "bmoe-server: listening on http://%s:%d\n", srv.host.c_str(), srv.port);
+    std::fprintf(stderr, "meitte-server: listening on http://%s:%d\n", srv.host.c_str(), srv.port);
 
     // ── Create the listening socket ───────────────────────────────────
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
-        std::fprintf(stderr, "bmoe-server: socket() failed: %s\n", std::strerror(errno));
+        std::fprintf(stderr, "meitte-server: socket() failed: %s\n", std::strerror(errno));
         return 1;
     }
 
@@ -1974,20 +2004,21 @@ int main(int argc, char ** argv) {
         addr.sin_addr.s_addr = INADDR_ANY;
     } else {
         if (inet_pton(AF_INET, srv.host.c_str(), &addr.sin_addr) != 1) {
-            std::fprintf(stderr, "bmoe-server: invalid host: %s\n", srv.host.c_str());
+            std::fprintf(stderr, "meitte-server: invalid host: %s\n", srv.host.c_str());
             close(listen_fd);
             return 1;
         }
     }
 
     if (bind(listen_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
-        std::fprintf(stderr, "bmoe-server: bind(%s:%d) failed: %s\n", srv.host.c_str(), srv.port, std::strerror(errno));
+        std::fprintf(stderr, "meitte-server: bind(%s:%d) failed: %s\n", srv.host.c_str(), srv.port,
+                     std::strerror(errno));
         close(listen_fd);
         return 1;
     }
 
     if (listen(listen_fd, srv.max_connections) < 0) {
-        std::fprintf(stderr, "bmoe-server: listen() failed: %s\n", std::strerror(errno));
+        std::fprintf(stderr, "meitte-server: listen() failed: %s\n", std::strerror(errno));
         close(listen_fd);
         return 1;
     }
@@ -2007,7 +2038,7 @@ int main(int argc, char ** argv) {
         int client_fd = accept(listen_fd, (struct sockaddr *) &client_addr, &client_len);
         if (client_fd < 0) {
             if (errno == EINTR) continue;
-            std::fprintf(stderr, "bmoe-server: accept() error: %s\n", std::strerror(errno));
+            std::fprintf(stderr, "meitte-server: accept() error: %s\n", std::strerror(errno));
             continue;
         }
 
@@ -2016,6 +2047,6 @@ int main(int argc, char ** argv) {
     }
 
     close(listen_fd);
-    std::fprintf(stderr, "bmoe-server: shutting down\n");
+    std::fprintf(stderr, "meitte-server: shutting down\n");
     return 0;
 }

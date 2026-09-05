@@ -28,7 +28,7 @@ int main() {
 
     error.clear();
     check(meitte::parse_session_command(R"({"cmd":"generate","prompt":"continue","clear_kv":false})", cfg, command,
-                                      error) &&
+                                        error) &&
               command.clear_kv && !*command.clear_kv,
           "explicit clear_kv=false requests KV continuation");
 
@@ -46,7 +46,7 @@ int main() {
 
     error.clear();
     check(!meitte::parse_session_command(R"({"cmd":"generate","id":9223372036854775808,"prompt":"x"})", cfg, command,
-                                       error),
+                                         error),
           "out-of-range command ids are rejected without throwing");
 
     return failures == 0 ? 0 : 1;

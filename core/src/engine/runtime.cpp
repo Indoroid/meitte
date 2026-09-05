@@ -19,6 +19,7 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.cache_type_k = cfg.cache_type_k;
     sc.cache_type_v = cfg.cache_type_v;
     sc.flash_attention = cfg.flash_attention;
+    sc.rope = cfg.rope;
     sc.tensor_buffer_overrides = cfg.tensor_buffer_overrides;
     sc.n_expert_used = cfg.n_expert_used; // active-expert (top-k) override; 0 = model default
     sc.compute_trace_layers = cfg.compute_trace_layers;

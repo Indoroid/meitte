@@ -1,28 +1,35 @@
 /**
- * BigMoeOnEdge bmoe-server provider for pi-coding-agent.
+ * Meitte meitte-server provider for pi-coding-agent.
  *
- * The server is always local and resident: model discovery comes from
- * /v1/models and inference uses the standard OpenAI chat-completions adapter.
+ * The default server is local and resident; its endpoint is configurable. Model discovery comes
+ * from /v1/models and inference uses the standard OpenAI chat-completions adapter.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 
-const PROVIDER_ID = "bmoe";
-const PROVIDER_NAME = "BigMoeOnEdge";
-const SERVER_URL = "http://127.0.0.1:8080";
-const BASE_URL = `${SERVER_URL}/v1`;
+const PROVIDER_ID = "meitte";
+const PROVIDER_NAME = "Meitte";
+const DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1";
 const DEFAULT_CONTEXT_WINDOW = 8192;
 const DEFAULT_MAX_TOKENS = 16384;
 const FALLBACK_MAX_TOKENS = 1024;
 const CONTEXT_GUARD_TOKENS = 256;
+
+// Match pi-llama's configuration contract while keeping Meitte's provider namespace separate.
+// Accepting either a server root or its OpenAI API root avoids a fragile, duplicated `/v1` suffix.
+function normalizeBaseUrl(value: string): string {
+	const baseUrl = value.replace(/\/+$/, "");
+	return baseUrl.endsWith("/v1") ? baseUrl : `${baseUrl}/v1`;
+}
 
 const ModelsResponseSchema = Type.Object({
 	data: Type.Optional(
 		Type.Array(
 			Type.Object({
 				id: Type.String(),
+				aliases: Type.Optional(Type.Array(Type.String())),
 				meta: Type.Optional(Type.Object({ n_ctx: Type.Optional(Type.Number()) })),
 			}),
 		),
@@ -57,11 +64,11 @@ function recoverOutputBudget(payload: unknown, model: MutableModel | undefined):
 	request.max_tokens = Math.min(FALLBACK_MAX_TOKENS, model.maxTokens, available);
 }
 
-function modelFromApi(model: { id: string; meta?: { n_ctx?: number } }): PiModel {
+function modelFromApi(model: { id: string; aliases?: string[]; meta?: { n_ctx?: number } }): PiModel {
 	const contextWindow = model.meta?.n_ctx ?? DEFAULT_CONTEXT_WINDOW;
 	return {
 		id: model.id,
-		name: model.id,
+		name: model.aliases?.[0] || model.id,
 		reasoning: true,
 		input: ["text"],
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -71,47 +78,49 @@ function modelFromApi(model: { id: string; meta?: { n_ctx?: number } }): PiModel
 	} as PiModel;
 }
 
-export default async function registerPiDriftwood(pi: ExtensionAPI): Promise<void> {
+export default async function registerPiMeitte(pi: ExtensionAPI): Promise<void> {
+	const baseUrl = normalizeBaseUrl(process.env.MEITTE_BASE_URL ?? DEFAULT_BASE_URL);
+	const serverUrl = baseUrl.replace(/\/v1$/, "");
+	const apiKey = process.env.MEITTE_API_KEY ?? "local";
 	let models: PiModel[] = [];
 
-	pi.registerCommand("bmoe-version", {
-		description: "Get bmoe-server version",
+	pi.registerCommand("meitte-version", {
+		description: "Get meitte-server version",
 		handler: async (_args, ctx) => {
 			try {
-				const response = await fetch(`${SERVER_URL}/`);
+				const response = await fetch(`${serverUrl}/`);
 				if (!response.ok) {
-					ctx.ui.notify(`[bmoe] / returned ${response.status}`, "error");
+					ctx.ui.notify(`[meitte] / returned ${response.status}`, "error");
 					return;
 				}
 				const data = (await response.json()) as { version?: unknown };
 				ctx.ui.notify(
-					typeof data.version === "string" ? `bmoe-server ${data.version}` : "bmoe-server did not report a version",
+					typeof data.version === "string" ? `meitte-server ${data.version}` : "meitte-server did not report a version",
 					typeof data.version === "string" ? "info" : "warning",
 				);
 			} catch (error) {
-				ctx.ui.notify(`[bmoe] ${error instanceof Error ? error.message : String(error)}`, "error");
+				ctx.ui.notify(`[meitte] ${error instanceof Error ? error.message : String(error)}`, "error");
 			}
 		},
 	});
 
 	async function refreshProvider(): Promise<void> {
 		try {
-			const response = await fetch(`${BASE_URL}/models`);
+			const response = await fetch(`${baseUrl}/models`);
 			if (!response.ok) throw new Error(`/v1/models returned ${response.status}`);
 			const payload: unknown = await response.json();
 			if (!validateModelsResponse.Check(payload)) throw new Error("invalid /v1/models response");
 			models = (payload.data ?? []).map(modelFromApi);
-			if (!models.length) throw new Error("bmoe-server returned no models");
+			if (!models.length) throw new Error("meitte-server returned no models");
 			pi.registerProvider(PROVIDER_ID, {
 				name: PROVIDER_NAME,
-				baseUrl: BASE_URL,
-				apiKey: "local",
-				authHeader: false,
+				baseUrl,
+				apiKey,
 				api: "openai-completions",
 				models,
 			});
 		} catch (error) {
-			console.warn(`[bmoe] ${error instanceof Error ? error.message : String(error)}`);
+			console.warn(`[meitte] ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 

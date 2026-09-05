@@ -47,6 +47,7 @@ struct SessionConfig {
     KvCacheType cache_type_k = KvCacheType::F16;
     KvCacheType cache_type_v = KvCacheType::F16;
     FlashAttentionMode flash_attention = FlashAttentionMode::Auto;
+    RopeConfig rope;
     std::vector<TensorBufferOverride> tensor_buffer_overrides;
     // Active-expert (top-k) override applied at load via a kv_override on the arch-prefixed
     // expert_used_count key. 0 = use the model's own count. See RunConfig::n_expert_used.

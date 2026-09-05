@@ -49,6 +49,24 @@ double secs(clock_t_::time_point a, clock_t_::time_point b) {
     return std::chrono::duration<double>(b - a).count();
 }
 
+// Keep the policy header free of llama.cpp types. `Auto` is intentionally the upstream
+// UNSPECIFIED value: llama_context then selects the RoPE method stored in the GGUF.
+llama_rope_scaling_type to_llama_rope_scaling(RopeScalingMode mode) {
+    switch (mode) {
+    case RopeScalingMode::Auto:
+        return LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED;
+    case RopeScalingMode::None:
+        return LLAMA_ROPE_SCALING_TYPE_NONE;
+    case RopeScalingMode::Linear:
+        return LLAMA_ROPE_SCALING_TYPE_LINEAR;
+    case RopeScalingMode::Yarn:
+        return LLAMA_ROPE_SCALING_TYPE_YARN;
+    case RopeScalingMode::LongRope:
+        return LLAMA_ROPE_SCALING_TYPE_LONGROPE;
+    }
+    return LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED;
+}
+
 // Fill an explicitly-allocated batch with `n` tokens at consecutive positions on sequence 0.
 //
 // The engine otherwise decodes through llama_batch_get_one, which leaves pos/seq_id/logits null and
@@ -825,6 +843,17 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
     cparams.type_k = to_ggml_type(cfg.cache_type_k);
     cparams.type_v = to_ggml_type(cfg.cache_type_v);
     cparams.flash_attn_type = to_flash_attn(cfg.flash_attention);
+    // These map one-to-one to llama.cpp's public context parameters. Do not derive a scaling
+    // method from the model name: upstream resolves Auto and LongRope from the GGUF metadata and
+    // factor tensors, which keeps this adapter correct as architectures are added upstream.
+    cparams.rope_scaling_type = to_llama_rope_scaling(cfg.rope.scaling);
+    cparams.rope_freq_base = cfg.rope.freq_base;
+    cparams.rope_freq_scale = cfg.rope.freq_scale;
+    cparams.yarn_ext_factor = cfg.rope.yarn_ext_factor;
+    cparams.yarn_attn_factor = cfg.rope.yarn_attn_factor;
+    cparams.yarn_beta_fast = cfg.rope.yarn_beta_fast;
+    cparams.yarn_beta_slow = cfg.rope.yarn_beta_slow;
+    cparams.yarn_orig_ctx = (uint32_t) cfg.rope.yarn_orig_ctx;
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
     // mmap baseline the streamed numbers are argued against.
@@ -1114,6 +1143,14 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
         ri.cache_type_k = kv_cache_type_name(cfg.cache_type_k);
         ri.cache_type_v = kv_cache_type_name(cfg.cache_type_v);
         ri.flash_attention = flash_attention_mode_name(cfg.flash_attention);
+        ri.rope_scaling = rope_scaling_mode_name(cfg.rope.scaling);
+        ri.rope_freq_base = cfg.rope.freq_base;
+        ri.rope_freq_scale = cfg.rope.freq_scale;
+        ri.yarn_ext_factor = cfg.rope.yarn_ext_factor;
+        ri.yarn_attn_factor = cfg.rope.yarn_attn_factor;
+        ri.yarn_beta_fast = cfg.rope.yarn_beta_fast;
+        ri.yarn_beta_slow = cfg.rope.yarn_beta_slow;
+        ri.yarn_orig_ctx = cfg.rope.yarn_orig_ctx;
         ri.custom_chat_template = !cfg.chat_template.empty();
         ri.compute_trace_layers = cfg.compute_trace_layers;
         ri.spec = cfg.spec.is_mtp() ? "mtp" : cfg.spec.is_ngram() ? "ngram" : "off";
@@ -1590,8 +1627,9 @@ RunResult Session::generate(const GenerateRequest & req,
                     std::search(tokens.begin() + n_common, tokens.end(), reply_begin, im.kv_tokens.end());
                 if (reply == tokens.end()) {
                     rollback_history();
-                    return fail("preserved multimodal KV cannot align the prior assistant response; start a new chat with "
-                                "clear_kv=true");
+                    return fail(
+                        "preserved multimodal KV cannot align the prior assistant response; start a new chat with "
+                        "clear_kv=true");
                 }
                 tokens.assign(reply + (im.kv_tokens.end() - reply_begin), tokens.end());
                 n_prompt = (int) tokens.size();
@@ -1600,7 +1638,8 @@ RunResult Session::generate(const GenerateRequest & req,
             }
         } else {
             const size_t max_common = tokens.size() > 0 ? tokens.size() - 1 : 0;
-            while (n_common < im.kv_tokens.size() && n_common < max_common && im.kv_tokens[n_common] == tokens[n_common])
+            while (n_common < im.kv_tokens.size() && n_common < max_common &&
+                   im.kv_tokens[n_common] == tokens[n_common])
                 ++n_common;
             if (n_common < im.kv_tokens.size()) {
                 // SWA-style memory (e.g. Gemma) can refuse a partial removal; fall back to a full
@@ -2120,8 +2159,9 @@ RunResult Session::generate(const GenerateRequest & req,
     s.loop_overhead_s_per_token = n_gen ? loop_overhead_s / n_gen : 0.0;
     s.n_prompt = has_media ? n_prompt : n_prompt - (int) n_common;
     s.n_past = chat_on && im.kv_has_media ? (int) n_past
-                                           : has_media ? (int) (prompt_n_past + n_gen)
-                                                       : chat_on ? (int) im.kv_tokens.size() : n_prompt + n_gen;
+               : has_media                ? (int) (prompt_n_past + n_gen)
+               : chat_on                  ? (int) im.kv_tokens.size()
+                                          : n_prompt + n_gen;
     s.load_seconds = im.load_seconds;
     s.prefill_seconds = prefill_seconds;
     s.prefill_cpu_seconds = prefill_tally.cpu_seconds;

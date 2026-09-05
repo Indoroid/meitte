@@ -40,8 +40,8 @@ overrides, when used, are limited to fully resident tensors rather than the stre
 
 ## Capabilities
 
-- `bmoe-cli` for local interactive and one-shot inference.
-- `bmoe-server` for OpenAI-compatible completions and chat-completions endpoints.
+- `meitte-cli` for local interactive and one-shot inference.
+- `meitte-server` for OpenAI-compatible completions and chat-completions endpoints.
 - MoE expert streaming with direct I/O where the platform supports it, bounded expert caching, and
   optional cache-aware routing.
 - Multimodal prompt support with an `--mmproj` projector for supported models.
@@ -50,6 +50,27 @@ overrides, when used, are limited to fully resident tensors rather than the stre
   and template support them.
 - Per-token progress, CSV metrics, route traces, and compute diagnostics for measuring the I/O and
   cache tradeoffs instead of guessing at them.
+
+## Supported Architectures
+
+The following GGUF `general.architecture` values are supported for expert streaming. Run
+`meitte-cli --list-archs` to print the list from the built binary.
+
+| Architecture ID | Model family |
+| --- | --- |
+| `qwen3moe` | Qwen3 MoE |
+| `qwen2moe` | Qwen2 MoE |
+| `qwen35moe` | Qwen3.5 MoE |
+| `gemma4` | Gemma 4 MoE |
+| `gpt-oss` | OpenAI gpt-oss |
+| `lfm2moe` | Liquid AI LFM2 and LFM2.5 MoE |
+| `deepseek4` | DeepSeek V4 Flash |
+| `bailingmoe3` | Ling 3.0 |
+| `qwen4exp` | Qwen3.8 Flash-Next / Qwen4 preview |
+
+The registry is intentionally explicit: a model is supported only when its expert tensor layout is
+known to preserve the native GGUF streaming invariant. See `docs/adding-a-model.md` for adding a
+new architecture safely.
 
 ## Quick Start
 
@@ -63,7 +84,7 @@ scripts/build-host.sh
 Run a streamed model from the CLI:
 
 ```bash
-build/cli/bmoe-cli \
+build/cli/meitte-cli \
   -m /path/to/model.gguf \
   --moe-stream --cache-mb auto \
   --chatml -p "Explain what a mixture-of-experts model is."
@@ -72,7 +93,7 @@ build/cli/bmoe-cli \
 Start an OpenAI-compatible server:
 
 ```bash
-build/cli/bmoe-server \
+build/cli/meitte-server \
   -m /path/to/model.gguf \
   --moe-stream --cache-mb auto \
   --host 127.0.0.1 --port 8080
@@ -81,7 +102,7 @@ build/cli/bmoe-server \
 For a supported multimodal model, supply its projector:
 
 ```bash
-build/cli/bmoe-server \
+build/cli/meitte-server \
   -m /path/to/model.gguf \
   --mmproj /path/to/mmproj.gguf \
   --moe-stream --cache-mb auto --port 8080

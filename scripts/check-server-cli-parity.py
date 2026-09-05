@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when bmoe-server stops accepting an applicable bmoe-cli option or env override."""
+"""Fail when meitte-server stops accepting an applicable meitte-cli option or env override."""
 
 from pathlib import Path
 import re
@@ -34,9 +34,9 @@ missing_env = sorted(cli_env - server_env)
 
 if missing_options or missing_env:
     if missing_options:
-        print("bmoe-server is missing CLI options: " + ", ".join(missing_options), file=sys.stderr)
+        print("meitte-server is missing CLI options: " + ", ".join(missing_options), file=sys.stderr)
     if missing_env:
-        print("bmoe-server is missing CLI env overrides: " + ", ".join(missing_env), file=sys.stderr)
+        print("meitte-server is missing CLI env overrides: " + ", ".join(missing_env), file=sys.stderr)
     raise SystemExit(1)
 
 print(

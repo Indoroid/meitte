@@ -1,10 +1,14 @@
 {
-	"name": "pi-driftwood",
+	"name": "pi-meitte",
 	"version": "0.1.0",
-	"description": "BigMoeOnEdge bmoe-server extension for pi-coding-agent",
+	"description": "Meitte meitte-server extension for pi-coding-agent",
 	"type": "module",
 	"license": "MIT",
-	"keywords": ["pi-package", "pi-extension", "BigMoeOnEdge", "bmoe-server"],
+	"keywords": ["pi-package", "pi-extension", "Meitte", "meitte-server"],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Indoroid/meitte.git"
+	},
 	"pi": { "extensions": ["./index.ts"] },
 	"scripts": { "test": "node --import tsx --test tests/*.test.ts" },
 	"peerDependencies": { "@earendil-works/pi-coding-agent": "*" },

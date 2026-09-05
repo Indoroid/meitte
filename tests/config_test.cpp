@@ -68,6 +68,25 @@ int main() {
             FlashAttentionMode mode = FlashAttentionMode::Auto;
             return parse_flash_attention_mode("OFF", mode) && mode == FlashAttentionMode::Disabled;
         }());
+        expect_true("RoPE mode parser covers every public llama.cpp mode", [&] {
+            const struct {
+                const char * text;
+                RopeScalingMode mode;
+            } cases[] = {{"auto", RopeScalingMode::Auto},
+                         {"none", RopeScalingMode::None},
+                         {"linear", RopeScalingMode::Linear},
+                         {"yarn", RopeScalingMode::Yarn},
+                         {"LONGROPE", RopeScalingMode::LongRope}};
+            for (const auto & item : cases) {
+                RopeScalingMode mode = RopeScalingMode::Auto;
+                if (!parse_rope_scaling_mode(item.text, mode) || mode != item.mode) return false;
+            }
+            return std::string(rope_scaling_mode_name(RopeScalingMode::LongRope)) == "longrope";
+        }());
+        expect_true("unknown RoPE mode leaves output unchanged", [&] {
+            RopeScalingMode mode = RopeScalingMode::Yarn;
+            return !parse_rope_scaling_mode("ntk", mode) && mode == RopeScalingMode::Yarn;
+        }());
         expect_true("unknown KV type leaves output unchanged", [&] {
             type = KvCacheType::Q4_0;
             return !parse_kv_cache_type("nope", type) && type == KvCacheType::Q4_0;
@@ -114,6 +133,23 @@ int main() {
         RunConfig c = ok_base();
         c.n_ctx = -1;
         expect_fail("n_ctx must be positive", c);
+    }
+    {
+        // Sentinel defaults are forwarded to llama.cpp unchanged. Only impossible floating-point
+        // inputs are rejected by the pure policy layer before a backend context is created.
+        RunConfig c = ok_base();
+        c.rope.scaling = RopeScalingMode::LongRope;
+        c.rope.freq_scale = 0.5f;
+        c.rope.yarn_ext_factor = 1.0f;
+        expect_ok("valid public RoPE configuration", c);
+        c.rope.freq_scale = std::numeric_limits<float>::quiet_NaN();
+        expect_fail("NaN RoPE frequency scale is rejected", c);
+        c.rope.freq_scale = 0.5f;
+        c.rope.yarn_beta_fast = -0.5f;
+        expect_fail("invalid YaRN sentinel is rejected", c);
+        c.rope.yarn_beta_fast = -1.0f;
+        c.rope.yarn_orig_ctx = -1;
+        expect_fail("negative YaRN original context is rejected", c);
     }
     {
         RunConfig c = ok_base();

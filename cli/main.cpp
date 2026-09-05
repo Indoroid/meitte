@@ -1,4 +1,4 @@
-// bmoe-cli — host driver for BigMoeOnEdge.
+// meitte-cli — host driver for Meitte.
 //
 // Parses flags into a RunConfig and runs the engine. Two output modes:
 //   * default: streams the generated text inline, per-token timing to stderr;
@@ -308,6 +308,15 @@ static void print_usage(const char * argv0) {
         "  -n, --n-predict N       tokens to generate (default 128)\n"
         "  -t, --threads N         compute threads (default 4)\n"
         "  -c, --ctx-size N        context size (default 2048)\n"
+        "      --rope-scaling MODE  RoPE method: auto|none|linear|yarn|longrope (default auto)\n"
+        "      --rope-scale N       context extension factor; sets RoPE frequency scale to 1/N\n"
+        "      --rope-freq-base N   RoPE frequency base; 0 keeps GGUF metadata\n"
+        "      --rope-freq-scale N  RoPE frequency scale; 0 keeps GGUF metadata\n"
+        "      --yarn-orig-ctx N    YaRN original context; 0 keeps GGUF metadata\n"
+        "      --yarn-ext-factor N  YaRN extrapolation mix; -1 keeps GGUF metadata\n"
+        "      --yarn-attn-factor N YaRN attention magnitude; -1 keeps GGUF metadata\n"
+        "      --yarn-beta-fast N   YaRN low correction dimension; -1 keeps GGUF metadata\n"
+        "      --yarn-beta-slow N   YaRN high correction dimension; -1 keeps GGUF metadata\n"
         "      --batch-size N      logical prefill batch size (default 2048)\n"
         "      --ubatch-size N     widest graph computed at once (default 512; --ubatch alias).\n"
         "                          Compute buffers are reserved for it, so a smaller value hands\n"
@@ -581,6 +590,28 @@ int main(int argc, char ** argv) {
             cfg.n_threads = std::atoi(next("-t"));
         else if (a == "-c" || a == "--ctx-size")
             cfg.n_ctx = std::atoi(next("-c"));
+        else if (a == "--rope-scaling") {
+            if (!parse_rope_scaling_mode(next("--rope-scaling"), cfg.rope.scaling)) {
+                std::fprintf(stderr, "bmoe: --rope-scaling expects auto|none|linear|yarn|longrope\n");
+                return 2;
+            }
+        } else if (a == "--rope-scale") {
+            const float scale = (float) std::atof(next("--rope-scale"));
+            cfg.rope.freq_scale = 1.0f / scale;
+        } else if (a == "--rope-freq-base")
+            cfg.rope.freq_base = (float) std::atof(next("--rope-freq-base"));
+        else if (a == "--rope-freq-scale")
+            cfg.rope.freq_scale = (float) std::atof(next("--rope-freq-scale"));
+        else if (a == "--yarn-orig-ctx")
+            cfg.rope.yarn_orig_ctx = std::atoi(next("--yarn-orig-ctx"));
+        else if (a == "--yarn-ext-factor")
+            cfg.rope.yarn_ext_factor = (float) std::atof(next("--yarn-ext-factor"));
+        else if (a == "--yarn-attn-factor")
+            cfg.rope.yarn_attn_factor = (float) std::atof(next("--yarn-attn-factor"));
+        else if (a == "--yarn-beta-fast")
+            cfg.rope.yarn_beta_fast = (float) std::atof(next("--yarn-beta-fast"));
+        else if (a == "--yarn-beta-slow")
+            cfg.rope.yarn_beta_slow = (float) std::atof(next("--yarn-beta-slow"));
         else if (a == "--batch-size")
             cfg.n_batch = std::atoi(next("--batch-size"));
         else if (a == "--ubatch" || a == "--ubatch-size")

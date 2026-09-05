@@ -32,10 +32,14 @@ public:
         std::fprintf(f_,
                      "# model=%s arch=%s n_layer=%d n_expert=%d n_expert_used=%d threads=%d "
                      "n_ctx=%d n_ubatch=%d chatml=%d n_batch=%d cache_type_k=%s cache_type_v=%s "
-                     "flash_attention=%s custom_chat_template=%d\n",
+                     "flash_attention=%s rope_scaling=%s rope_freq_base=%.8g rope_freq_scale=%.8g "
+                     "yarn_ext_factor=%.8g yarn_attn_factor=%.8g yarn_beta_fast=%.8g yarn_beta_slow=%.8g "
+                     "yarn_orig_ctx=%d custom_chat_template=%d\n",
                      r.model.c_str(), r.arch.c_str(), r.n_layer, r.n_expert, r.n_expert_used, r.n_threads, r.n_ctx,
                      r.n_ubatch, r.chatml, r.n_batch, r.cache_type_k.c_str(), r.cache_type_v.c_str(),
-                     r.flash_attention.c_str(), r.custom_chat_template);
+                     r.flash_attention.c_str(), r.rope_scaling.c_str(), (double) r.rope_freq_base,
+                     (double) r.rope_freq_scale, (double) r.yarn_ext_factor, (double) r.yarn_attn_factor,
+                     (double) r.yarn_beta_fast, (double) r.yarn_beta_slow, r.yarn_orig_ctx, r.custom_chat_template);
         std::fprintf(f_,
                      "# moe_stream=%d cache_mb=%d cache_auto=%d cache_floor_mb=%d cache_ceil_mb=%d "
                      "cache_cycle_mb=%d force_cache=%d load_all=%d io_threads=%d o_direct=%d "

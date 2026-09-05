@@ -1,6 +1,6 @@
 # Session mode
 
-A fresh `bmoe-cli` process per prompt re-pays two fixed costs every time: the model load (tens
+A fresh `meitte-cli` process per prompt re-pays two fixed costs every time: the model load (tens
 of seconds for a >RAM model) and the expert-cache warm-up ramp (the LRU cache starts empty, so
 the first tokens miss often and read far more from flash than the steady state — see
 [benchmarks.md](benchmarks.md)). Streaming was meant to avoid exactly this kind of repeated work.
@@ -33,8 +33,8 @@ warming the cache changes latency, never the bytes.
   owns the conversation (`chat_history`) and re-renders the model's chat template over the *whole*
   history each turn, so the caller sends only the new user message — not the running transcript.
 
-`bmoe-cli --session --kv-preserve` makes subsequent commands choose `clear_kv=false` by default;
-an individual JSON command can still send `"clear_kv":true` to reset. `bmoe-server --kv-preserve`
+`meitte-cli --session --kv-preserve` makes subsequent commands choose `clear_kv=false` by default;
+an individual JSON command can still send `"clear_kv":true` to reset. `meitte-server --kv-preserve`
 does the same for one incremental server-wide conversation. It is intentionally not a multi-client
 session store: a caller that needs isolation must start a fresh chat with `clear_kv:true`.
 
@@ -79,7 +79,7 @@ is rejected without tearing the session down.
 
 ## CLI and app
 
-`bmoe-cli --session` exposes this over a line protocol (requests on stdin, `BMOE_*` responses on
+`meitte-cli --session` exposes this over a line protocol (requests on stdin, `BMOE_*` responses on
 stdout — see [telemetry.md](telemetry.md)). A generate request may send either the legacy `prompt`
 or a complete `messages` transcript, plus `think`, `reasoning_effort`, and JSON-valued
 `chat_template_kwargs`; these request controls do not reopen the session. `--reasoning-budget N`

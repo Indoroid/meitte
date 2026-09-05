@@ -11,7 +11,7 @@ The absolute score is below the model's published one (quantized, zero-shot, no 
 this measures is the DIFFERENCE between cells, on the same 100 questions, deterministically.
 
 Usage:
-    python scripts/tinymmlu-bench.py --parquet test.parquet --cli build/cli/Release/bmoe-cli.exe \
+    python scripts/tinymmlu-bench.py --parquet test.parquet --cli build/cli/Release/meitte-cli.exe \
         --model M.gguf --out results/ --lambda 0 --lambda 0.15 [--limit N]
 
 The parquet is data/test-00000-of-00001.parquet from huggingface.co/datasets/tinyBenchmarks/tinyMMLU.
@@ -96,7 +96,7 @@ def run_cell(cli, model, list_path, lam, log_path, threads, cache_mb, ctx):
     with open(log_path, "a", encoding="utf-8") as log:
         rc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, check=False, env=env).returncode
     if rc != 0:
-        print(f"bmoe-cli exited with {rc} (see {log_path})", file=sys.stderr)
+        print(f"meitte-cli exited with {rc} (see {log_path})", file=sys.stderr)
 
 
 def parse_cell(log_path, keys):

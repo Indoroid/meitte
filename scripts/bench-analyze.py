@@ -142,7 +142,7 @@ for model, pretty in (("qwen", "Qwen3-30B-A3B-Q4_K_M (18.5 GB, 128 experts, top-
     #
     # No `resizes` column: it once tracked a governor moving the budget mid-run, and that governor is
     # gone — `--cache-mb auto` sizes the budget once at init and holds it, so the count is 0 for every
-    # run bmoe-cli produces. A column that is structurally always 0 reads as a finding, not a blank.
+    # run meitte-cli produces. A column that is structurally always 0 reads as a finding, not a blank.
     sized = [(k, r) for k, r in rows if r and (r["cache_budget_MiB"] > 0 or r["spec_read_MiB_tok"] > 0)]
     if sized:
         print(f"\n===== {model.upper()} — cache sizing / temporal prefetch =====")

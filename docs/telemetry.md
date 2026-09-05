@@ -1,6 +1,6 @@
 # Telemetry contract
 
-With `--progress`, `bmoe-cli` emits machine-readable lines the Android app (and any other
+With `--progress`, `meitte-cli` emits machine-readable lines the Android app (and any other
 consumer) parses. The format is versioned by this document; keep it stable.
 
 ## Per-token lines
@@ -260,7 +260,9 @@ prints just the summary lines.
 # engine=<ver>
 # model=<file> arch=<arch> n_layer=<n> n_expert=<n> n_expert_used=<k> threads=<n>
   n_ctx=<n> n_ubatch=<n> chatml=<0|1> n_batch=<n> cache_type_k=<type> cache_type_v=<type>
-  flash_attention=<auto|on|off> custom_chat_template=<0|1>
+  flash_attention=<auto|on|off> rope_scaling=<auto|none|linear|yarn|longrope>
+  rope_freq_base=<f> rope_freq_scale=<f> yarn_ext_factor=<f> yarn_attn_factor=<f>
+  yarn_beta_fast=<f> yarn_beta_slow=<f> yarn_orig_ctx=<n> custom_chat_template=<0|1>
 # moe_stream=<0|1> cache_mb=<n> cache_auto=<0|1> cache_floor_mb=<n> cache_ceil_mb=<n>
   cache_cycle_mb=<n> force_cache=<0|1> load_all=<0|1> io_threads=<n> o_direct=<0|1>
   overlap=<0|1> io_two_wave=<0|1> prefetch=<n>
@@ -281,7 +283,7 @@ Values are the **resolved** configuration, not what was typed — `cache_mb` is 
 settled on, which under `--cache-mb auto` is a number no flag mentioned, and `n_expert_used` is the
 effective top-k after any override. Fields to read carefully:
 
-- `engine` is the version that produced the rows (`bmoe-cli --version`), so a committed file still
+- `engine` is the version that produced the rows (`meitte-cli --version`), so a committed file still
   names its build after the checkout has moved on. `unknown` if the build did not define it. It sits
   on its own line so the `model=` line keeps starting with `model=`, which is how the app's CSV
   reader finds a run's name.
@@ -302,6 +304,9 @@ effective top-k after any override. Fields to read carefully:
   selective run's.
 - `cache_type_k`, `cache_type_v`, `flash_attention`, and `custom_chat_template` identify the
   session's context allocation and template source; quantized V cache requires Flash Attention.
+- `rope_scaling` and the RoPE/YaRN fields record positional interpretation. `auto`, zero frequency
+  values, and `-1` YaRN values mean the corresponding choice was left to llama.cpp/GGUF metadata;
+  they must be recorded because the same `n_ctx` can produce different position encodings.
 - `o_direct=<0|1>` is what the shard opens **achieved**, not what the flag asked for: a platform can
   refuse the request, and the open-time verify can downgrade a shard that mis-serves it to buffered.
   On a Mac the request is served with `F_NOCACHE` — it turns data caching off for the descriptor
@@ -485,7 +490,7 @@ support, are archived in
 
 ## Session mode
 
-With `--session`, `bmoe-cli` keeps the model loaded and the expert cache warm across prompts
+With `--session`, `meitte-cli` keeps the model loaded and the expert cache warm across prompts
 instead of exiting after one generation (see [session.md](session.md)). Requests arrive as one
 JSON object per line on **stdin**; responses interleave control lines with the same per-token
 lines above on **stdout**. The control lines are also `BMOE_<TAG> {json}`, so a per-token parser
