@@ -238,7 +238,7 @@ public:
     // Frame the rows of one llama_decode, as begin_trace_batch does for the route trace. Rows are
     // stamped with `step`; a prefill chunk attributes its whole graph to the batch's last position,
     // since a node is computed once for the batch, not per token.
-    void begin_compute_batch(int step, int phase, int turn);
+    void begin_compute_batch(int step, int phase, int turn, uint8_t media_kind = 0);
 
     // Close the batch's final interval (layer-granularity only): the last layer's tail plus the
     // final norm and LM head have no successor boundary to observe them, so the session must call
@@ -251,7 +251,7 @@ public:
     // first token and `n_tokens` its length, so a prefill chunk's rows carry real per-token step
     // numbers — and so a layer that saw fewer tokens than the batch can still be placed (see
     // flush_pending).
-    void begin_trace_batch(int base_pos, int n_tokens, int phase, int turn);
+    void begin_trace_batch(int base_pos, int n_tokens, int phase, int turn, uint8_t media_kind = 0);
     void end_trace_batch(); // flush the last layer, which has no successor to trigger it
 
     std::vector<RouteTraceRow> & trace_rows() { return trace_rows_; }
@@ -510,6 +510,7 @@ private:
     // Route trace. All of this is inert unless trace_on_.
     bool trace_on_ = false;
     int trace_base_pos_ = 0, trace_batch_n_ = 1, trace_phase_ = 0, trace_turn_ = 0;
+    uint8_t trace_media_kind_ = 0;
     PendingLayer pending_;
     std::vector<RouteTraceRow> trace_rows_;
     std::unordered_set<int32_t> charged_; // per-flush scratch: experts already charged for a read
@@ -524,6 +525,7 @@ private:
     bool ctrace_layers_ = false;
     int ctrace_ask_layer_ = -1, ctrace_obs_layer_ = -1;
     int ctrace_step_ = 0, ctrace_phase_ = 0, ctrace_turn_ = 0;
+    uint8_t ctrace_media_kind_ = 0;
     int ctrace_seq_ = 0;
     std::chrono::steady_clock::time_point ctrace_mark_;
     uint64_t ctrace_faults_ = 0;

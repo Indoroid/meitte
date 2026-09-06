@@ -29,9 +29,10 @@ enum RouteResidency : uint8_t {
 // One cell entry: at `step`, layer `layer` routed `expert` in rank slot `slot`. A cell of the
 // step x layer matrix is the n_expert_used rows sharing (turn, phase, step, layer).
 struct RouteTraceRow {
-    int turn = 0;  // session-mode turn (0 for a one-shot run)
-    int phase = 0; // 0 = prefill, 1 = decode
-    int step = 0;  // absolute context position of the token being routed
+    int turn = 0;           // session-mode turn (0 for a one-shot run)
+    int phase = 0;          // 0 = prefill, 1 = decode
+    uint8_t media_kind = 0; // MediaKind value for a media batch; 0 for text and decode batches
+    int step = 0;           // absolute context position of the token being routed
     int layer = 0;
     int slot = 0;              // 0..n_expert_used-1, router rank order (descending weight)
     int32_t expert = 0;        // the routed expert id — the matrix cell's payload

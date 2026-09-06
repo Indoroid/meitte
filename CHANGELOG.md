@@ -11,7 +11,8 @@ All notable changes to this project are documented here.
   --ctx-size <= --dyn-max-ctx` bounds. Defaults remain off.
 - Sampled video input through upstream mtmd and FFmpeg, plus a bounded Unix FFmpeg fallback for
   standalone audio formats that mtmd cannot decode directly.
-- Multimodal prefill route, compute, and I/O tracing, with an optional real-model CTest fixture.
+- Multimodal prefill route, compute, and I/O tracing, with media-kind attribution, separate
+  preparation/projector timing, and an optional real-model CTest fixture.
 - A shared `libmeitte` build option and an opaque C ABI for FFI callers, with size-tagged
   trailing defaults, ABI/version queries, and a Python `ctypes` smoke example.
 - A vendor-neutral unified-KV configuration adapter with `--kv-unified` and
@@ -24,3 +25,6 @@ All notable changes to this project are documented here.
 - Row streaming accepts graph-computed contiguous `I32` indices and restores the original mmap on
   an unsupported access instead of materializing a second whole-table copy.
 - Model, projector, and draft execution are CPU-only.
+- Context frontend controls now use the documented `--dynamic-*`, `--summarize-history`, and
+  `--trim-old` names. The former names remain aliases; matching `MEITTE_*` variables apply only
+  when no corresponding flag is supplied.

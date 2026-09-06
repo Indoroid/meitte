@@ -6,6 +6,7 @@
 #include "mtmd.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -17,6 +18,7 @@ struct MtmdPrefillResult {
     std::string error;
     size_t n_tokens = 0;
     llama_pos n_past = 0;
+    double projector_seconds = 0.0;
     std::vector<llama_token> text_tail;
 };
 
@@ -31,6 +33,7 @@ public:
         std::vector<std::shared_ptr<void>> video_owners;
         mtmd::bitmaps bitmaps;
         mtmd::input_chunks_ptr chunks{nullptr};
+        std::vector<MediaKind> chunk_media_kinds;
         size_t n_tokens = 0;
         llama_pos n_pos = 0;
         std::vector<llama_token> text_tail;
@@ -42,7 +45,7 @@ public:
                  std::string & error,
                  const std::function<bool()> & cancelled = {});
     struct DecodeObserver {
-        std::function<void(int, int)> before;
+        std::function<void(int, int, MediaKind)> before;
         std::function<void(const llama_batch &)> after;
     };
     MtmdPrefillResult evaluate(llama_context * lctx,

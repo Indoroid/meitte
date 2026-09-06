@@ -1923,16 +1923,20 @@ RunResult Session::generate(const GenerateRequest & req,
     // the context position of the batch's first token, so prefill rows carry real step numbers.
     // The frame the I/O rows are stamped with at flush; the other traces carry their own.
     int trace_phase = 0, trace_step = 0;
-    auto trace_begin = [&](int base_pos, int n_tokens, int phase) {
+    uint8_t trace_media_kind = 0;
+    auto trace_begin = [&](int base_pos, int n_tokens, int phase, MediaKind media_kind = MediaKind::Auto) {
         // Not a trace concern, but the same per-decode frame: the drop policy is decode-only
         // unless armed for prefill, so it has to be told which phase this batch is.
         im.hook->set_batch_phase(phase);
-        if (im.route_trace) im.hook->begin_trace_batch(base_pos, n_tokens, phase, im.turn);
+        if (im.route_trace)
+            im.hook->begin_trace_batch(base_pos, n_tokens, phase, im.turn, static_cast<uint8_t>(media_kind));
         // A node is computed once for the whole batch, not per token, so a prefill chunk's graph is
         // attributed to its last position rather than pretending to split across the chunk.
-        if (im.compute_trace) im.hook->begin_compute_batch(base_pos + n_tokens - 1, phase, im.turn);
+        if (im.compute_trace)
+            im.hook->begin_compute_batch(base_pos + n_tokens - 1, phase, im.turn, static_cast<uint8_t>(media_kind));
         trace_phase = phase;
         trace_step = base_pos + n_tokens - 1;
+        trace_media_kind = static_cast<uint8_t>(media_kind);
     };
     auto trace_flush = [&](const llama_batch * media_batch = nullptr) {
         // Close the compute trace's dangling interval FIRST: at layer granularity the "post" row
@@ -1965,6 +1969,7 @@ RunResult Session::generate(const GenerateRequest & req,
             for (IoTraceRow & r : im.io_rows_scratch) {
                 r.turn = im.turn;
                 r.phase = trace_phase;
+                r.media_kind = trace_media_kind;
                 r.step = media_batch ? media_batch->pos[media_batch->n_tokens - 1] : trace_step;
             }
             if (!im.io_rows_scratch.empty()) im.io_trace->on_rows(im.io_rows_scratch.data(), im.io_rows_scratch.size());
@@ -1990,6 +1995,8 @@ RunResult Session::generate(const GenerateRequest & req,
     const bool mtp_on = im.mtp != nullptr;
     const bool media_prefill = has_media || media_replay;
     std::vector<llama_token> media_text_tail;
+    double media_prepare_seconds = 0.0;
+    double media_projector_seconds = 0.0;
     if (media_prefill) {
         // mtmd performs text/media llama_decode() calls on THIS text context. Its projector graph
         // has no RouterHook, but every embedding decode through ctx retains DriftWood's MoE hook.
@@ -1998,10 +2005,12 @@ RunResult Session::generate(const GenerateRequest & req,
         MtmdRuntime::Prepared prepared;
         std::string media_error;
         const auto & media = has_media ? req.media : im.retained_media;
+        const auto media_prepare_start = clock_t_::now();
         if (!im.mtmd.prepare(prompt, media, prepared, media_error, [&] { return im.cancel_requested.load(); })) {
             rollback_turn();
             return fail(media_error);
         }
+        media_prepare_seconds = secs(media_prepare_start, clock_t_::now());
         const int64_t need =
             std::max<int64_t>(prepared.n_pos, prepared.n_tokens) + (reserve_output ? req.n_predict : 1) + 8;
         if (need > im.cfg.n_ctx && im.cfg.context.grow != ContextMode::Off && need <= im.cfg.context.max_ctx) {
@@ -2019,7 +2028,7 @@ RunResult Session::generate(const GenerateRequest & req,
             return fail("multimodal prompt exceeds context capacity; reopen with a larger context");
         }
         MtmdRuntime::DecodeObserver observer;
-        observer.before = [&](int pos, int n) { trace_begin(pos, n, 0); };
+        observer.before = [&](int pos, int n, MediaKind media_kind) { trace_begin(pos, n, 0, media_kind); };
         observer.after = [&](const llama_batch & batch) { trace_flush(&batch); };
         MtmdPrefillResult mm =
             im.mtmd.evaluate(ctx, prepared, im.cfg.n_batch, observer, [&] { return im.cancel_requested.load(); });
@@ -2034,6 +2043,7 @@ RunResult Session::generate(const GenerateRequest & req,
             if (moe.overlap && im.source.fatal()) return fail("expert stream I/O failed during multimodal prefill");
             return fail(mm.error);
         }
+        media_projector_seconds = mm.projector_seconds;
         n_prompt = (int) mm.n_tokens;
         media_text_tail = std::move(mm.text_tail);
         prompt_n_past = mm.n_past;
@@ -2493,6 +2503,8 @@ RunResult Session::generate(const GenerateRequest & req,
                                           : n_prompt + n_gen;
     s.load_seconds = im.load_seconds;
     s.prefill_seconds = prefill_seconds;
+    s.media_prepare_seconds = media_prepare_seconds;
+    s.media_projector_seconds = media_projector_seconds;
     s.prefill_cpu_seconds = prefill_tally.cpu_seconds;
     s.prefill_read_mib = prefill_tally.read_mib;
     s.prefill_io_seconds = prefill_tally.io_seconds;

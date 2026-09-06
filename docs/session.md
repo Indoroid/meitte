@@ -94,20 +94,23 @@ Both frontends expose the core policy directly:
 
 ```text
 --dynamic-ctx off|on|auto
---dyn-min-ctx N
---dyn-max-ctx N
---context-summarize off|on|auto
---context-trim off|on|auto
+--dynamic-min-ctx N
+--dynamic-max-ctx N
+--summarize-history off|on|auto
+--trim-old true|false|auto
 ```
 
-The bounds must satisfy `dyn-min-ctx <= ctx-size <= dyn-max-ctx`. `--ctx-size` is the opening
+The bounds must satisfy `dynamic-min-ctx <= ctx-size <= dynamic-max-ctx`. `--ctx-size` is the opening
 context. Growth recreates the context with the same RoPE/YaRN parameters until it reaches
-`--dyn-max-ctx`, so that maximum is the final RoPE/YaRN-opened context. `on` reacts when the current
+`--dynamic-max-ctx`, so that maximum is the final RoPE/YaRN-opened context. `on` reacts when the current
 context reaches capacity; `auto` reserves the request's output allowance before prefill.
 Summarization and trimming operate on chat history, so they need chat templating or a server chat
 request. All recovery controls remain off by default, and bounds alone do not enable growth.
 
-`--dynamic-max-ctx` remains accepted as a compatibility alias for `--dyn-max-ctx`.
+The frontends read `MEITTE_DYNAMIC_CTX`, `MEITTE_DYNAMIC_MIN_CTX`,
+`MEITTE_DYNAMIC_MAX_CTX`, `MEITTE_SUMMARIZE_HISTORY`, and `MEITTE_TRIM_OLD` only when the
+matching flag is absent. The former `--dyn-min-ctx`, `--dyn-max-ctx`, `--context-summarize`,
+and `--context-trim` names remain compatibility aliases.
 
 ## C and Python FFI
 

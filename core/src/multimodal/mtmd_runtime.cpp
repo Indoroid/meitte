@@ -3,6 +3,7 @@
 #include "media_io.h"
 #include "mtmd-helper.h"
 #include <cmath>
+#include <chrono>
 #include <cstdlib>
 #include <limits>
 #include <memory>
@@ -78,6 +79,7 @@ bool MtmdRuntime::prepare(const std::string & prompt,
     out.chunks.reset();
     out.bitmaps.entries.clear();
     out.video_owners.clear();
+    out.chunk_media_kinds.clear();
     out.n_tokens = 0;
     out.n_pos = 0;
     out.text_tail.clear();
@@ -88,6 +90,8 @@ bool MtmdRuntime::prepare(const std::string & prompt,
     // Tokenization consumes lazy video callbacks. Keep their owners at stable addresses.
     uint64_t input_bytes = 0;
     auto decoded_bytes = std::make_shared<uint64_t>(0);
+    std::vector<MediaKind> bitmap_kinds;
+    bitmap_kinds.reserve(media.size());
     for (const auto & input : media) {
         if (cancelled && cancelled()) {
             error = "media preparation cancelled";
@@ -123,6 +127,7 @@ bool MtmdRuntime::prepare(const std::string & prompt,
                 return false;
             }
             out.bitmaps.entries.emplace_back(bitmap);
+            bitmap_kinds.push_back(kind);
             out.video_owners.push_back(std::move(video));
         } else {
             auto decoded = mtmd_helper_bitmap_init_from_buf(ctx_.get(), input.bytes.data(), input.bytes.size(), false,
@@ -140,6 +145,7 @@ bool MtmdRuntime::prepare(const std::string & prompt,
                 return false;
             }
             out.bitmaps.entries.emplace_back(decoded.bitmap);
+            bitmap_kinds.push_back(kind);
             size_t size = mtmd_bitmap_get_n_bytes(decoded.bitmap);
             if (size > cfg_.media_max_bytes - *decoded_bytes) {
                 error = "decoded media byte limit exceeded";
@@ -169,11 +175,17 @@ bool MtmdRuntime::prepare(const std::string & prompt,
     // Keep bitmaps and video handles alive until their prepared chunks have been evaluated.
     out.n_tokens = mtmd_helper_get_n_tokens(out.chunks.get());
     out.n_pos = mtmd_helper_get_n_pos(out.chunks.get());
+    size_t bitmap_index = 0;
+    out.chunk_media_kinds.assign(mtmd_input_chunks_size(out.chunks.get()), MediaKind::Auto);
     for (size_t i = 0; i < mtmd_input_chunks_size(out.chunks.get()); ++i) {
         auto * chunk = mtmd_input_chunks_get(out.chunks.get(), i);
-        if (mtmd_input_chunk_get_type(chunk) != MTMD_INPUT_CHUNK_TYPE_TEXT)
+        if (mtmd_input_chunk_get_type(chunk) != MTMD_INPUT_CHUNK_TYPE_TEXT) {
             out.text_tail.clear();
-        else {
+            // Upstream emits media chunks in marker order. Keep Auto if a future helper changes it.
+            out.chunk_media_kinds[i] =
+                bitmap_index < bitmap_kinds.size() ? bitmap_kinds[bitmap_index] : MediaKind::Auto;
+            ++bitmap_index;
+        } else {
             size_t n = 0;
             const auto * ids = mtmd_input_chunk_get_tokens_text(chunk, &n);
             if (n) out.text_tail.insert(out.text_tail.end(), ids, ids + n);
@@ -214,7 +226,7 @@ MtmdPrefillResult MtmdRuntime::evaluate(llama_context * lctx,
                     batch.seq_id[j][0] = 0;
                     batch.logits[j] = i + 1 == count && offset + j + 1 == size;
                 }
-                if (observer.before) observer.before(pos, batch.n_tokens);
+                if (observer.before) observer.before(pos, batch.n_tokens, MediaKind::Auto);
                 rc = llama_decode(lctx, batch);
                 if (rc == 0 && observer.after) observer.after(batch);
                 pos += batch.n_tokens;
@@ -223,11 +235,15 @@ MtmdPrefillResult MtmdRuntime::evaluate(llama_context * lctx,
             }
             llama_batch_free(batch);
         } else {
+            const auto projector_start = std::chrono::steady_clock::now();
             rc = mtmd_encode_chunk(ctx_.get(), chunk);
+            out.projector_seconds +=
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - projector_start).count();
             if (rc == 0) {
                 struct Callback {
                     const DecodeObserver & observer;
                     const std::function<bool()> & cancelled;
+                    MediaKind media_kind;
                     int remaining;
                     int batch_size;
                     int offset;
@@ -238,12 +254,18 @@ MtmdPrefillResult MtmdRuntime::evaluate(llama_context * lctx,
                         self.offset += batch.n_tokens;
                         if (self.cancelled && self.cancelled()) return 1;
                         if (self.remaining > 0 && self.observer.before)
-                            self.observer.before(self.offset, std::min(self.remaining, self.batch_size));
+                            self.observer.before(self.offset, std::min(self.remaining, self.batch_size),
+                                                 self.media_kind);
                         return 0;
                     }
-                } callback{observer, cancelled, (int) mtmd_input_chunk_get_n_tokens(chunk), n_batch, 0};
+                } callback{observer,
+                           cancelled,
+                           i < prepared.chunk_media_kinds.size() ? prepared.chunk_media_kinds[i] : MediaKind::Auto,
+                           (int) mtmd_input_chunk_get_n_tokens(chunk),
+                           n_batch,
+                           0};
                 // Trace rows start at a local ordinal. The observer maps them to batch.pos after decode.
-                if (observer.before) observer.before(0, std::min(callback.remaining, n_batch));
+                if (observer.before) observer.before(0, std::min(callback.remaining, n_batch), callback.media_kind);
                 rc = mtmd_helper_decode_image_chunk(ctx_.get(), lctx, chunk, mtmd_get_output_embd(ctx_.get()), pos, 0,
                                                     n_batch, &pos, Callback::after, &callback);
             }

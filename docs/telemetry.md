@@ -362,7 +362,9 @@ average the two wait columns below, and `evictions` / `rereads` are the cache-ch
 the `moe-cache:` line — a read of an entry the cache had already held once is the only way a
 prefetch whose reads are all "useful" can still raise the byte count.
 
-The prefill phase's own split rides the trailer too: `prefill_cpu_s=<s>`, `prefill_read_mib=<f>`,
+The media fields `media_prepare_s=<s>` and `media_projector_s=<s>` separate input decode and
+mtmd tokenization from mtmd embedding preparation. Both are portions of `prefill_s`; neither
+contains target-model decode. The prefill phase's own split rides the trailer too: `prefill_cpu_s=<s>`, `prefill_read_mib=<f>`,
 `prefill_io_s=<s>`, `prefill_stall_s=<s>`, `prefill_mgmt_s=<s>` — the same raw values, names and
 units as the `BMOE_DONE` keys of those names (see the protocol notes above), appended keys so
 existing readers ignore them. A recorded run can now answer "what did the prompt cost, and in
@@ -425,7 +427,7 @@ expert. Conceptually it is a matrix — rows are steps, columns are layers — a
 # route_trace v1
 # model=<path> arch=<string> n_layer=<int> n_expert=<int> n_expert_used=<int>
 # layer=<int> expert_bytes=<int> dense_bytes=<int>        (one per layer)
-turn,phase,step,layer,slot,expert,weight,residency,expert_bytes,dropped
+turn,phase,step,layer,slot,expert,weight,residency,expert_bytes,dropped,media_kind
 ```
 
 | column | meaning |
@@ -440,6 +442,7 @@ turn,phase,step,layer,slot,expert,weight,residency,expert_bytes,dropped
 | `residency` | `0` = miss (this routing reads from flash), `1` = hit, `2` = hit on a speculative prefetch's first touch. |
 | `expert_bytes` | flash bytes this routing reads; `0` unless `residency=0`. |
 | `dropped` | `1` when [cache-aware dropping](expert-dropping.md) discarded this routing — a miss weighted below the threshold, never read, weight zeroed. Always `0` with `--drop-cold-experts` off. |
+| `media_kind` | `0` = text/decode, `1` = image, `2` = audio, `3` = video. |
 
 `(turn, phase, step, layer, slot)` is unique. Two asymmetries are deliberate:
 
@@ -526,6 +529,7 @@ BMOE_DONE  {"id":<int>,"cancelled":<bool>,"tokens":<int>,"tok_s":<float>,
             "cache_resident_mib":<float>,"cache_budget_mib":<float>,"read_mib":<float>,
             "stall_s_tok":<float>,"mgmt_s_tok":<float>,"majflt_tok":<float>,"cpu_s_tok":<float>,
             "prefill_cpu_s":<float>,"prefill_read_mib":<float>,"prefill_io_s":<float>,
+            "media_prepare_s":<float>,"media_projector_s":<float>,
             "prefill_stall_s":<float>,"prefill_mgmt_s":<float>,
             "token_demand_mib":<float>,"mtp_drafted":<int>,"mtp_accepted":<int>,"mtp_decodes":<int>,
             "mtp_draft_s_tok":<float>,"drafted_steps":<int>,"loop_overhead_s_tok":<float>,
@@ -542,7 +546,10 @@ excludes both, so `1 / (1/tok_s + loop_overhead_s_tok)` is the rate a user actua
 for `--ngram`, which decodes plainly when it has no match. See [mtp.md](mtp.md) and
 [ngram.md](ngram.md).
 
-The `prefill_*` keys are the prompt phase's own attribution (#173): `prefill_read_mib` / `_io_s` /
+The `media_prepare_s` field covers media decode and mtmd tokenization; `media_projector_s`
+covers mtmd embedding preparation. Both are portions of `prefill_s`, and target-model decode
+remains accounted by the other prefill fields. The `prefill_*` keys are the prompt phase's own
+attribution (#173): `prefill_read_mib` / `_io_s` /
 `_stall_s` / `_mgmt_s` are deltas of the same cumulative streamer counters the decode fields come
 from, taken across this turn's prefill chunks, and `prefill_cpu_s` is process CPU over the same
 window (an upper bound on compute-thread CPU-equivalent time, as everywhere). Read them with the
@@ -621,9 +628,9 @@ plain mmap run has too, so a dense baseline can be traced and compared against a
 ```
 # compute_trace v1
 # model=... arch=qwen3moe n_layer=48 n_threads=4 io_threads=4 o_direct=1 overlap=0
-turn,phase,step,seq,layer,op,name,wall_ns,majflt
-0,1,29,0,-1,GET_ROWS,embd,428500,0
-0,1,29,1,0,RMS_NORM,norm-0,19500,0
+turn,phase,step,seq,layer,op,name,wall_ns,majflt,media_kind
+0,1,29,0,-1,GET_ROWS,embd,428500,0,0
+0,1,29,1,0,RMS_NORM,norm-0,19500,0,0
 ```
 
 `seq` is the node's execution order in the decode; `layer` is parsed from the node name's `-<il>`
@@ -632,6 +639,7 @@ which node is attention vs dense FFN vs expert matmul is naming policy that vari
 architecture, so the engine reports what the graph said and the analysis script classifies.
 During multimodal prefill, `step` is mapped from each mtmd batch's decoder positions. Compute and
 I/O rows for a media batch use its last position; route rows retain their per-position mapping.
+`media_kind` identifies the input that produced that batch.
 
 ### `--compute-trace-layers` — one row per layer segment
 
@@ -657,8 +665,8 @@ issues, tagged with the `(layer, expert, projection)` it serves.
 
 ```
 # io_trace v1
-turn,phase,step,layer,expert,proj,lane,spec,offset,req_bytes,read_bytes,latency_ns
-0,1,29,0,87,1,0,0,1526304,65536,69632,416800
+turn,phase,step,layer,expert,proj,lane,spec,offset,req_bytes,read_bytes,latency_ns,media_kind
+0,1,29,0,87,1,0,0,1526304,65536,69632,416800,0
 ```
 
 `req_bytes` is what the caller wanted; `read_bytes` is the aligned window actually pulled — the

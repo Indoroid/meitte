@@ -58,6 +58,9 @@ limited to 32 MiB, all decoded media in one request to 64 MiB, and the HTTP body
 - N-gram speculation works after media prefill and uses only the trailing text token history.
   MTP is rejected because upstream's speculative helper does not process embedding batches.
 - Route, compute, and I/O tracing include multimodal prefill batches and use their decoder positions.
+  Their append-only `media_kind` column is `0` for text/decode, `1` for image, `2` for audio,
+  and `3` for video. Run summaries report media preparation (decode and tokenization) separately
+  from projector embedding work; neither value includes target-model decode.
 - Video is sampled input only. Live streams, soundtrack extraction, and frame resampling beyond the
   upstream helper are not implemented. Input and decoded media are bounded by the configured byte limit.
 - On Unix, an audio buffer that mtmd cannot decode is converted to mono float PCM by a bounded,

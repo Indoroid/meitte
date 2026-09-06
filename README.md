@@ -106,9 +106,9 @@ passed directly to libllama: `--kv-unified` enables its unified cache, while
 `--no-kv-unified` selects the default separate-cache layout.
 
 Context recovery is opt-in. For example,
-`--dyn-min-ctx 2048 --ctx-size 4096 --dynamic-ctx auto --dyn-max-ctx 8192` grows the opening context
+`--dynamic-min-ctx 2048 --ctx-size 4096 --dynamic-ctx auto --dynamic-max-ctx 8192` grows the opening context
 only when a request needs it, up to the final context opened with the configured RoPE/YaRN values.
-`--context-summarize auto` and `--context-trim auto` add lossy recovery for older complete chat
+`--summarize-history auto` and `--trim-old auto` add lossy recovery for older complete chat
 turns.
 
 For a supported multimodal model, supply its projector:

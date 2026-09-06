@@ -39,10 +39,11 @@ namespace meitte {
 
 // One isolated graph node's compute. Emitted only while the compute trace is on.
 struct ComputeTraceRow {
-    int turn = 0;  // session-mode turn (0 for a one-shot run)
-    int phase = 0; // 0 = prefill, 1 = decode
-    int step = 0;  // absolute context position of the token being computed
-    int seq = 0;   // node's position in the graph this decode (0-based), i.e. execution order
+    int turn = 0;           // session-mode turn (0 for a one-shot run)
+    int phase = 0;          // 0 = prefill, 1 = decode
+    uint8_t media_kind = 0; // MediaKind value for a media batch; 0 for text and decode batches
+    int step = 0;           // absolute context position of the token being computed
+    int seq = 0;            // node's position in the graph this decode (0-based), i.e. execution order
     int layer = -1;
     // ggml's op name (ggml_op_name) and the node's own name. Deliberately raw: which node belongs
     // to attention vs the dense FFN vs the expert matmul is naming policy that varies by
@@ -57,6 +58,7 @@ struct ComputeTraceRow {
 struct IoTraceRow {
     int turn = 0;
     int phase = 0;
+    uint8_t media_kind = 0; // MediaKind value for a media batch; 0 for text and decode batches
     int step = 0;
     int layer = -1;
     int32_t expert = -1;

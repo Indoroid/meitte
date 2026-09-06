@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <cctype>
 #include <condition_variable>
 #include <cstdio>
@@ -27,6 +28,7 @@
 #include <deque>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -251,6 +253,7 @@ static int run_session_loop(const RunConfig & cfg,
                     "\"compute_s_tok\":%.4f,\"io_s_tok\":%.4f,\"cache_resident_mib\":%.0f,\"cache_budget_mib\":%.0f,"
                     "\"read_mib\":%.1f,\"stall_s_tok\":%.4f,\"mgmt_s_tok\":%.4f,\"majflt_tok\":%.2f,\"cpu_s_tok\":%.4f,"
                     "\"prefill_cpu_s\":%.3f,\"prefill_read_mib\":%.1f,\"prefill_io_s\":%.3f,"
+                    "\"media_prepare_s\":%.3f,\"media_projector_s\":%.3f,"
                     "\"prefill_stall_s\":%.3f,\"prefill_mgmt_s\":%.3f,"
                     "\"token_demand_mib\":%.1f,\"mtp_drafted\":%lld,\"mtp_accepted\":%lld,\"mtp_decodes\":%lld,"
                     "\"mtp_draft_s_tok\":%.4f,\"drafted_steps\":%lld,\"loop_overhead_s_tok\":%.4f,"
@@ -260,10 +263,10 @@ static int run_session_loop(const RunConfig & cfg,
                     s.n_prompt, s.n_past, s.moe_compute_s_per_token, s.moe_io_s_per_token, s.cache_resident_mib,
                     s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
                     s.majflt_per_token, s.cpu_s_per_token, s.prefill_cpu_seconds, s.prefill_read_mib,
-                    s.prefill_io_seconds, s.prefill_stall_seconds, s.prefill_mgmt_seconds, s.token_demand_mib,
-                    s.mtp_drafted, s.mtp_accepted, s.mtp_decodes, s.mtp_draft_s_per_token, s.drafted_steps,
-                    s.loop_overhead_s_per_token, json_escape(r.reasoning_text).c_str(),
-                    json_escape(r.generated_text).c_str());
+                    s.prefill_io_seconds, s.media_prepare_seconds, s.media_projector_seconds, s.prefill_stall_seconds,
+                    s.prefill_mgmt_seconds, s.token_demand_mib, s.mtp_drafted, s.mtp_accepted, s.mtp_decodes,
+                    s.mtp_draft_s_per_token, s.drafted_steps, s.loop_overhead_s_per_token,
+                    json_escape(r.reasoning_text).c_str(), json_escape(r.generated_text).c_str());
         std::fflush(stdout);
     }
 
@@ -308,12 +311,12 @@ static void print_usage(const char * argv0) {
         "  -n, --n-predict N       tokens to generate (default 128)\n"
         "  -t, --threads N         compute threads (default 4)\n"
         "  -c, --ctx-size N        context size (default 2048)\n"
-        "      --dynamic-ctx MODE   context growth: off|on|auto (requires --dyn-max-ctx)\n"
-        "      --dyn-min-ctx N      lower bound for the opening context (default --ctx-size)\n"
-        "      --dyn-max-ctx N      final RoPE/YaRN-opened context size\n"
-        "      --dynamic-max-ctx N  compatibility alias for --dyn-max-ctx\n"
-        "      --context-summarize MODE summarize old turns: off|on|auto (lossy)\n"
-        "      --context-trim MODE  remove old complete turns: off|on|auto (lossy)\n"
+        "      --dynamic-ctx MODE   context growth: off|on|auto (requires --dynamic-max-ctx)\n"
+        "      --dynamic-min-ctx N  lower bound for the opening context (default --ctx-size)\n"
+        "      --dynamic-max-ctx N  final RoPE/YaRN-opened context size\n"
+        "      --summarize-history MODE summarize old turns: off|on|auto (lossy)\n"
+        "      --trim-old MODE      remove old complete turns: true|false|auto (lossy)\n"
+        "      --dyn-min-ctx/--dyn-max-ctx/--context-summarize/--context-trim compatibility aliases\n"
         "      --rope-scaling MODE  RoPE method: auto|none|linear|yarn|longrope (default auto)\n"
         "      --rope-scale N       context extension factor; sets RoPE frequency scale to 1/N\n"
         "      --rope-freq-base N   RoPE frequency base; 0 keeps GGUF metadata\n"
@@ -603,18 +606,18 @@ int main(int argc, char ** argv) {
                 std::fprintf(stderr, "bmoe: --dynamic-ctx expects off|on|auto\n");
                 return 2;
             }
-        } else if (a == "--dyn-min-ctx")
-            cfg.context.min_ctx = std::atoi(next("--dyn-min-ctx"));
+        } else if (a == "--dyn-min-ctx" || a == "--dynamic-min-ctx")
+            cfg.context.min_ctx = std::atoi(next("--dynamic-min-ctx"));
         else if (a == "--dyn-max-ctx" || a == "--dynamic-max-ctx")
             cfg.context.max_ctx = std::atoi(next("--dyn-max-ctx"));
-        else if (a == "--context-summarize") {
-            if (!parse_context_mode(next("--context-summarize"), cfg.context.summarize)) {
-                std::fprintf(stderr, "bmoe: --context-summarize expects off|on|auto\n");
+        else if (a == "--context-summarize" || a == "--summarize-history") {
+            if (!parse_context_mode(next("--summarize-history"), cfg.context.summarize)) {
+                std::fprintf(stderr, "bmoe: --summarize-history expects off|on|auto\n");
                 return 2;
             }
-        } else if (a == "--context-trim") {
-            if (!parse_context_mode(next("--context-trim"), cfg.context.trim)) {
-                std::fprintf(stderr, "bmoe: --context-trim expects off|on|auto\n");
+        } else if (a == "--context-trim" || a == "--trim-old") {
+            if (!parse_context_mode(next("--trim-old"), cfg.context.trim)) {
+                std::fprintf(stderr, "bmoe: --trim-old expects true|false|auto\n");
                 return 2;
             }
         } else if (a == "--rope-scaling") {
@@ -896,6 +899,49 @@ int main(int argc, char ** argv) {
     if (!seen.count("--n-expert-used")) cfg.n_expert_used = env_int("BMOE_N_EXPERT_USED", 0);
     if (!seen.count("--predict-log")) cfg.moe.predict_log = env_int("BMOE_PREDICT_LOG", 0) != 0;
     if (!seen.count("--predict-prefetch")) cfg.moe.predict_prefetch = env_int("BMOE_PREDICT_PREFETCH", 0) != 0;
+
+    auto context_flag_seen = [&](const char * first, const char * second) {
+        return seen.count(first) || seen.count(second);
+    };
+    auto env_context_mode = [](const char * key, ContextMode & value) {
+        const char * env = std::getenv(key);
+        return !env || !*env || parse_context_mode(env, value);
+    };
+    auto env_context_int = [](const char * key, int & value) {
+        const char * env = std::getenv(key);
+        if (!env || !*env) return true;
+        char * end = nullptr;
+        errno = 0;
+        const long parsed = std::strtol(env, &end, 10);
+        if (errno || !end || *end || parsed < std::numeric_limits<int>::min() ||
+            parsed > std::numeric_limits<int>::max())
+            return false;
+        value = static_cast<int>(parsed);
+        return true;
+    };
+    if (!seen.count("--dynamic-ctx") && !env_context_mode("MEITTE_DYNAMIC_CTX", cfg.context.grow)) {
+        std::fprintf(stderr, "bmoe: MEITTE_DYNAMIC_CTX expects off|on|auto\n");
+        return 2;
+    }
+    if (!context_flag_seen("--dynamic-min-ctx", "--dyn-min-ctx") &&
+        !env_context_int("MEITTE_DYNAMIC_MIN_CTX", cfg.context.min_ctx)) {
+        std::fprintf(stderr, "bmoe: MEITTE_DYNAMIC_MIN_CTX must be an integer\n");
+        return 2;
+    }
+    if (!context_flag_seen("--dynamic-max-ctx", "--dyn-max-ctx") &&
+        !env_context_int("MEITTE_DYNAMIC_MAX_CTX", cfg.context.max_ctx)) {
+        std::fprintf(stderr, "bmoe: MEITTE_DYNAMIC_MAX_CTX must be an integer\n");
+        return 2;
+    }
+    if (!context_flag_seen("--summarize-history", "--context-summarize") &&
+        !env_context_mode("MEITTE_SUMMARIZE_HISTORY", cfg.context.summarize)) {
+        std::fprintf(stderr, "bmoe: MEITTE_SUMMARIZE_HISTORY expects off|on|auto\n");
+        return 2;
+    }
+    if (!context_flag_seen("--trim-old", "--context-trim") && !env_context_mode("MEITTE_TRIM_OLD", cfg.context.trim)) {
+        std::fprintf(stderr, "bmoe: MEITTE_TRIM_OLD expects true|false|auto\n");
+        return 2;
+    }
 
     // A default the CLI resolves rather than the library, so an embedder's explicit 0 keeps meaning
     // "no cache". With streaming on, a budget of 0 re-reads every routed expert from flash every

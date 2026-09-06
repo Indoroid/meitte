@@ -1203,11 +1203,12 @@ void RouterHook::set_trace(bool on) {
     trace_rows_.clear();
 }
 
-void RouterHook::begin_trace_batch(int base_pos, int n_tokens, int phase, int turn) {
+void RouterHook::begin_trace_batch(int base_pos, int n_tokens, int phase, int turn, uint8_t media_kind) {
     trace_base_pos_ = base_pos;
     trace_batch_n_ = n_tokens > 0 ? n_tokens : 1;
     trace_phase_ = phase;
     trace_turn_ = turn;
+    trace_media_kind_ = media_kind;
     pending_ = PendingLayer{};
     trace_rows_.clear();
 }
@@ -1251,6 +1252,7 @@ void RouterHook::flush_pending() {
             RouteTraceRow r;
             r.turn = trace_turn_;
             r.phase = trace_phase_;
+            r.media_kind = trace_media_kind_;
             r.step = position_of(j);
             r.layer = P.layer;
             r.slot = k;
@@ -1290,10 +1292,11 @@ void RouterHook::set_compute_trace(bool on, bool per_layer) {
     compute_rows_.clear();
 }
 
-void RouterHook::begin_compute_batch(int step, int phase, int turn) {
+void RouterHook::begin_compute_batch(int step, int phase, int turn, uint8_t media_kind) {
     ctrace_step_ = step;
     ctrace_phase_ = phase;
     ctrace_turn_ = turn;
+    ctrace_media_kind_ = media_kind;
     ctrace_seq_ = 0;
     ctrace_ask_layer_ = -1;
     ctrace_obs_layer_ = -1;
@@ -1311,6 +1314,7 @@ void RouterHook::ctrace_close_segment(int interval_layer, const char * tail_name
     ComputeTraceRow r;
     r.turn = ctrace_turn_;
     r.phase = ctrace_phase_;
+    r.media_kind = ctrace_media_kind_;
     r.step = ctrace_step_;
     r.seq = ctrace_seq_++;
     r.layer = interval_layer;
@@ -1352,6 +1356,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
             ComputeTraceRow r;
             r.turn = ctrace_turn_;
             r.phase = ctrace_phase_;
+            r.media_kind = ctrace_media_kind_;
             r.step = ctrace_step_;
             r.seq = ctrace_seq_++;
             r.layer = node_layer(t->name);

@@ -38,7 +38,7 @@ public:
 
     void on_static(const DecodeTraceStatic & s) override {
         write_static(f_, "compute_trace", s);
-        std::fprintf(f_, "turn,phase,step,seq,layer,op,name,wall_ns,majflt\n");
+        std::fprintf(f_, "turn,phase,step,seq,layer,op,name,wall_ns,majflt,media_kind\n");
         std::fflush(f_);
     }
 
@@ -49,7 +49,8 @@ public:
             write_csv_field(f_, r.op);
             std::fputc(',', f_);
             write_csv_field(f_, r.name);
-            std::fprintf(f_, ",%llu,%llu\n", (unsigned long long) r.wall_ns, (unsigned long long) r.majflt);
+            std::fprintf(f_, ",%llu,%llu,%u\n", (unsigned long long) r.wall_ns, (unsigned long long) r.majflt,
+                         (unsigned) r.media_kind);
         }
         std::fflush(f_); // once per decode, not per row
     }
@@ -67,17 +68,18 @@ public:
 
     void on_static(const DecodeTraceStatic & s) override {
         write_static(f_, "io_trace", s);
-        std::fprintf(f_, "turn,phase,step,layer,expert,proj,lane,spec,offset,req_bytes,read_bytes,latency_ns\n");
+        std::fprintf(f_,
+                     "turn,phase,step,layer,expert,proj,lane,spec,offset,req_bytes,read_bytes,latency_ns,media_kind\n");
         std::fflush(f_);
     }
 
     void on_rows(const IoTraceRow * rows, size_t n) override {
         for (size_t i = 0; i < n; ++i) {
             const IoTraceRow & r = rows[i];
-            std::fprintf(f_, "%d,%d,%d,%d,%d,%d,%d,%u,%llu,%llu,%llu,%llu\n", r.turn, r.phase, r.step, r.layer,
+            std::fprintf(f_, "%d,%d,%d,%d,%d,%d,%d,%u,%llu,%llu,%llu,%llu,%u\n", r.turn, r.phase, r.step, r.layer,
                          (int) r.expert, (int) r.proj, (int) r.lane, (unsigned) r.spec, (unsigned long long) r.offset,
                          (unsigned long long) r.req_bytes, (unsigned long long) r.read_bytes,
-                         (unsigned long long) r.latency_ns);
+                         (unsigned long long) r.latency_ns, (unsigned) r.media_kind);
         }
         std::fflush(f_);
     }

@@ -45,12 +45,14 @@ int main(int argc, char ** argv) {
     r.yarn_orig_ctx = 16384;
     sink->on_run_info(r);
 
-    RunSummary s;                     // value-init: every other field zero, only the five under test are set
-    s.prefill_cpu_seconds = 12.3456;  // %.3f -> 12.346
-    s.prefill_read_mib = 4096.5;      // %.1f -> 4096.5
-    s.prefill_io_seconds = 3.4567;    // %.3f -> 3.457
-    s.prefill_stall_seconds = 2.7182; // %.3f -> 2.718
-    s.prefill_mgmt_seconds = 1.4142;  // %.3f -> 1.414
+    RunSummary s;                       // value-init: every other field zero, only the five under test are set
+    s.media_prepare_seconds = 0.1234;   // %.3f -> 0.123
+    s.media_projector_seconds = 5.6789; // %.3f -> 5.679
+    s.prefill_cpu_seconds = 12.3456;    // %.3f -> 12.346
+    s.prefill_read_mib = 4096.5;        // %.1f -> 4096.5
+    s.prefill_io_seconds = 3.4567;      // %.3f -> 3.457
+    s.prefill_stall_seconds = 2.7182;   // %.3f -> 2.718
+    s.prefill_mgmt_seconds = 1.4142;    // %.3f -> 1.414
     sink->on_summary(s);
     delete sink; // the destructor closes and flushes the file
 
@@ -72,6 +74,8 @@ int main(int argc, char ** argv) {
         std::printf("[FAIL] no '# summary' line in %s\n", out.c_str());
         ++failures;
     } else {
+        expect_key(summary, "media_prepare_s", "0.123");
+        expect_key(summary, "media_projector_s", "5.679");
         expect_key(summary, "prefill_cpu_s", "12.346");
         expect_key(summary, "prefill_read_mib", "4096.5");
         expect_key(summary, "prefill_io_s", "3.457");

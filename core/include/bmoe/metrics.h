@@ -117,6 +117,10 @@ struct RunSummary {
     int n_past = 0;
     double load_seconds = 0.0;
     double prefill_seconds = 0.0;
+    // Media preparation is input decode and mtmd tokenization before target decode.
+    double media_prepare_seconds = 0.0;
+    // Projector time is mtmd embedding preparation. It does not include target model decode.
+    double media_projector_seconds = 0.0;
 
     // Prefill-phase attribution (#173): the same wall-additive quantities the decode phase
     // reports, as deltas of the streamer's cumulative counters across THIS turn's prefill
