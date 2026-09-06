@@ -170,9 +170,16 @@ void RouterHook::begin_capture() {
     captured_weights_.clear();
     row_gathered_.clear();
     row_disqualified_.clear();
+    row_computed_index_.clear();
+    row_computed_indices_ = false;
 }
 void RouterHook::end_capture() {
     capturing_ = false;
+    for (const std::string & name : row_computed_index_)
+        if (!row_disqualified_.count(name)) {
+            row_computed_indices_ = true;
+            break;
+        }
 }
 
 void RouterHook::set_drop_policy(float frac, bool renorm, bool in_prefill) {
@@ -1382,11 +1389,12 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                 if (src->op != GGML_OP_NONE) continue;
                 captured_weights_[src->name] = src;
                 // …and HOW this node used it, which is what decides whether its residency can be
-                // reduced to the rows the graph asks for. Only the table position of a row gather
-                // counts, and only when the index is already in memory when the node runs.
-                if (t->op == GGML_OP_GET_ROWS && s == 0 && index_materialized(t->src[1]))
+                // reduced to the rows the graph asks for. Only the table position of an I32 row
+                // gather counts. Computed indices request a barrier after capture.
+                if (t->op == GGML_OP_GET_ROWS && s == 0 && t->src[1] && t->src[1]->type == GGML_TYPE_I32) {
                     row_gathered_.insert(src->name);
-                else
+                    if (!index_materialized(t->src[1])) row_computed_index_.insert(src->name);
+                } else
                     row_disqualified_.insert(src->name);
             }
         }
@@ -1395,17 +1403,16 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
 
     // ── row-gathered dense tables: put the rows in place before the node reads them ──
     //
-    // No barrier and no isolation: unlike the routing nodes, nothing here needs the node's OUTPUT —
-    // only to act before it runs, which the ask pass already offers for free. The op test rejects
-    // every node but the handful of gathers a graph contains; the scan in the other arm is the
-    // safety net for a graph shape the capture pass never saw, and it costs a few pointer compares
-    // against the one or two tables a policy actually serves.
+    // The gather itself needs no barrier because the rows are loaded before it runs. A computed
+    // index producer is isolated separately so its output is ready when this ask callback reads it.
+    // The other arm restores the mmap if a later graph uses a shape that capture did not see.
     if (row_source_ && ask) {
         if (t->op == GGML_OP_GET_ROWS) {
             ggml_tensor * table = t->src[0];
             ggml_tensor * ids = t->src[1];
             if (table && row_source_->serves(table)) {
-                if (ids && ids->data && ids->type == GGML_TYPE_I32) {
+                if (ids && ids->data && ids->type == GGML_TYPE_I32 && ggml_is_contiguous(ids) &&
+                    ggml_nelements(ids) <= INT32_MAX) {
                     if (!row_source_->gather(table, (const int32_t *) ids->data, (int) ggml_nelements(ids)))
                         fatal_.store(true, std::memory_order_release);
                 } else if (!row_source_->materialize(table)) {
@@ -1483,7 +1490,10 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
         // as the prefetch does — the isolated variant measured ~+0.04 s/token of pure barrier and
         // GEMV tax on the host. What makes that safe for a COMMITTED consumer is the watchdog in
         // route_ahead_submit plus the passthrough default, not a barrier.
-        return ctrace_iso || is_topk || weights_iso || (is_logits && predict_log_);
+        // Integer producers must finish before a row gather reads their indices. This broad
+        // barrier uses graph types, not model names. Measure its cost on computed-index tables.
+        return ctrace_iso || is_topk || weights_iso || (is_logits && predict_log_) ||
+               (row_source_ && row_computed_indices_ && t->type == GGML_TYPE_I32);
     }
 
     // The probe attaches to the gate matmul rather than to the topk node because this is where the

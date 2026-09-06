@@ -28,6 +28,32 @@ add_executable(bmoe_config_test config_test.cpp)
 target_link_libraries(bmoe_config_test PRIVATE bmoe_core)
 add_test(NAME config_validate COMMAND bmoe_config_test)
 
+add_executable(bmoe_library_test library_test.cpp)
+target_link_libraries(bmoe_library_test PRIVATE bmoe_core)
+find_program(BMOE_TEST_FFMPEG_EXECUTABLE ffmpeg)
+if(BMOE_TEST_FFMPEG_EXECUTABLE)
+    target_compile_definitions(bmoe_library_test PRIVATE BMOE_TEST_FFMPEG=1)
+endif()
+add_test(NAME library_api COMMAND bmoe_library_test)
+add_executable(bmoe_library_c_test library_c_test.c)
+target_link_libraries(bmoe_library_c_test PRIVATE bmoe_core)
+add_test(NAME library_c_api COMMAND bmoe_library_c_test)
+add_executable(bmoe_context_test context_test.cpp)
+target_link_libraries(bmoe_context_test PRIVATE bmoe_core)
+
+set(BMOE_TEST_MM_MODEL "" CACHE FILEPATH "Optional multimodal text model for the media trace fixture")
+set(BMOE_TEST_MMPROJ "" CACHE FILEPATH "Optional projector for the media trace fixture")
+set(BMOE_TEST_MEDIA "" CACHE FILEPATH "Optional input for the media trace fixture")
+option(BMOE_TEST_MM_STREAM "Enable expert streaming in the media trace fixture" OFF)
+if(BMOE_TEST_MM_MODEL AND BMOE_TEST_MMPROJ AND BMOE_TEST_MEDIA)
+    add_executable(bmoe_media_trace_test media_trace_test.cpp)
+    target_link_libraries(bmoe_media_trace_test PRIVATE bmoe_core)
+    target_include_directories(bmoe_media_trace_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/multimodal)
+    add_test(NAME media_prefill_trace
+             COMMAND bmoe_media_trace_test ${BMOE_TEST_MM_MODEL} ${BMOE_TEST_MMPROJ}
+                     ${BMOE_TEST_MEDIA} ${BMOE_TEST_MM_STREAM})
+endif()
+
 add_executable(bmoe_session_protocol_test session_protocol_test.cpp)
 target_link_libraries(bmoe_session_protocol_test PRIVATE bmoe_cli_protocol)
 add_test(NAME session_protocol COMMAND bmoe_session_protocol_test)
@@ -58,6 +84,10 @@ add_test(NAME csv_summary COMMAND bmoe_csv_summary_test)
 
 find_program(PYTHON3 NAMES python3 python)
 if(PYTHON3)
+    if(BMOE_BUILD_SHARED)
+        add_test(NAME ctypes_smoke
+                 COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/examples/python/ctypes_smoke.py $<TARGET_FILE:bmoe_core>)
+    endif()
     add_test(NAME server_cli_parity
              COMMAND ${PYTHON3} ${CMAKE_SOURCE_DIR}/scripts/check-server-cli-parity.py)
 
@@ -84,6 +114,8 @@ if(PYTHON3)
 
             add_test(NAME moe_gates_${spec} COMMAND bmoe_moe_gates ${_model})
             set_tests_properties(moe_gates_${spec} PROPERTIES FIXTURES_REQUIRED ${_fixture})
+            add_test(NAME context_${spec} COMMAND bmoe_context_test ${_model})
+            set_tests_properties(context_${spec} PROPERTIES FIXTURES_REQUIRED ${_fixture})
         endforeach()
 
         add_test(

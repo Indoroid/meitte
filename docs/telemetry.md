@@ -432,7 +432,7 @@ turn,phase,step,layer,slot,expert,weight,residency,expert_bytes,dropped
 | --- | --- |
 | `turn` | session-mode turn; `0` for a one-shot run. One file per run, appended across turns. |
 | `phase` | `0` = prefill (one batched decode over many tokens), `1` = decode (one token per step). |
-| `step` | absolute context position of the token being routed, so prefill and decode share one axis. |
+| `step` | absolute context position of the token or media embedding being routed, so prefill and decode share one axis. |
 | `layer` | MoE layer. Dense layers never appear. |
 | `slot` | `0..n_expert_used-1`, the router's rank order — slot 0 is its top choice. |
 | `expert` | **the routed expert id**: the cell's payload, and what every reuse question is asked of. |
@@ -630,6 +630,8 @@ turn,phase,step,seq,layer,op,name,wall_ns,majflt
 suffix (`-1` = belongs to no layer: embeddings, the output head, masks). `op` and `name` are raw —
 which node is attention vs dense FFN vs expert matmul is naming policy that varies by
 architecture, so the engine reports what the graph said and the analysis script classifies.
+During multimodal prefill, `step` is mapped from each mtmd batch's decoder positions. Compute and
+I/O rows for a media batch use its last position; route rows retain their per-position mapping.
 
 ### `--compute-trace-layers` — one row per layer segment
 

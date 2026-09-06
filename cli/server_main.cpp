@@ -971,6 +971,7 @@ static void send_json_error(int fd, int status, const char * msg, bool ka) {
 
 struct ServerConfig {
     std::string host = "127.0.0.1";
+    std::string model_alias;
     int port = 8080;
     int max_connections = 32;
     // Base64 media expands request bodies substantially; keep an explicit cap instead of the old
@@ -1057,6 +1058,7 @@ static json make_stream_usage(const std::string & id,
 }
 
 static std::string loaded_model_id(const ServerState & state) {
+    if (!state.srv_cfg.model_alias.empty()) return state.srv_cfg.model_alias;
     const std::string & path = state.session_cfg.model_path;
     const size_t sep = path.find_last_of("/\\");
     return sep == std::string::npos ? path : path.substr(sep + 1);
@@ -1210,7 +1212,7 @@ static void handle_completions(int fd, const HttpRequest & req, ServerState & st
     greq.override_sampling = true;
     greq.sampling = api.sampling;
     long created = static_cast<long>(std::time(nullptr));
-    const std::string response_model = api.model.empty() ? loaded_model_id(state) : api.model;
+    const std::string response_model = loaded_model_id(state);
     const std::string request_tag =
         std::to_string(created) + "_" + std::to_string(response_sequence.fetch_add(1, std::memory_order_relaxed));
     ProgressDelta progress;
@@ -1441,13 +1443,14 @@ static void print_usage(const char * argv0) {
     std::printf("usage: %s -m <model.gguf> [options]\n"
                 "\n"
                 "  -m, --model PATH        gguf model (required)\n"
+                "  -a, --alias NAME        model name returned by the API\n"
                 "  -ot, --override-tensor PATTERN=BUFFER_TYPE[,..]\n"
                 "                          place matching fully resident tensors in a llama.cpp buffer;\n"
                 "                          incompatible with --moe-stream and never repacks the GGUF\n"
                 "      --list-buffer-types print available llama.cpp buffer types and exit\n"
                 "  -mm, --mmproj PATH      multimodal projector gguf\n"
-                "      --mmproj-offload     offload projector to GPU when supported (default)\n"
-                "      --no-mmproj-offload  keep projector on CPU\n"
+                "      --mmproj-offload     unsupported in this CPU-only build\n"
+                "      --no-mmproj-offload  keep projector on CPU (default)\n"
                 "      --image-min-tokens N override projector image token floor\n"
                 "      --image-max-tokens N override projector image token ceiling\n"
                 "      --mtmd-batch-max-tokens N projector output batch limit (default 1024)\n"
@@ -1460,6 +1463,12 @@ static void print_usage(const char * argv0) {
                 "  -n, --n-predict N       maximum generated tokens per request (default 128)\n"
                 "  -t, --threads N         CPU compute threads (default 4)\n"
                 "  -c, --ctx-size N        model context size (default 2048)\n"
+                "      --dynamic-ctx MODE  context growth: off|on|auto (requires --dyn-max-ctx)\n"
+                "      --dyn-min-ctx N     lower bound for the opening context (default --ctx-size)\n"
+                "      --dyn-max-ctx N     final RoPE/YaRN-opened context size\n"
+                "      --dynamic-max-ctx N compatibility alias for --dyn-max-ctx\n"
+                "      --context-summarize MODE summarize old turns: off|on|auto (lossy)\n"
+                "      --context-trim MODE remove old complete turns: off|on|auto (lossy)\n"
                 "      --rope-scaling MODE  RoPE method: auto|none|linear|yarn|longrope (default auto)\n"
                 "      --rope-scale N       context extension factor; sets RoPE frequency scale to 1/N\n"
                 "      --rope-freq-base N   RoPE frequency base; 0 keeps GGUF metadata\n"
@@ -1487,6 +1496,8 @@ static void print_usage(const char * argv0) {
                 "      --chat-template-file PATH read the chat-template override from a file\n"
                 "      --cache-type-k TYPE  KV key type: f32,f16,bf16,q8_0,q5_0,q5_1,q4_0,q4_1,iq4_nl\n"
                 "      --cache-type-v TYPE  KV value type; quantized values require Flash Attention\n"
+                "      --kv-unified        use one unified KV cache (default off)\n"
+                "      --no-kv-unified     use separate per-sequence KV caches\n"
                 "      --flash-attn MODE    Flash Attention policy: auto|on|off (default auto)\n"
                 "\n"
                 "  Sampling:\n"
@@ -1596,6 +1607,8 @@ int main(int argc, char ** argv) {
 
         if (a == "-m" || a == "--model")
             cfg.model_path = next("-m");
+        else if (a == "-a" || a == "--alias")
+            srv.model_alias = next("--alias");
         else if (a == "-mm" || a == "--mmproj")
             cfg.multimodal.mmproj_path = next("--mmproj");
         else if (a == "--mmproj-offload")
@@ -1622,7 +1635,26 @@ int main(int argc, char ** argv) {
             cfg.n_threads = std::atoi(next("-t"));
         else if (a == "-c" || a == "--ctx-size")
             cfg.n_ctx = std::atoi(next("-c"));
-        else if (a == "--rope-scaling") {
+        else if (a == "--dynamic-ctx") {
+            if (!parse_context_mode(next("--dynamic-ctx"), cfg.context.grow)) {
+                std::fprintf(stderr, "meitte-server: --dynamic-ctx expects off|on|auto\n");
+                return 2;
+            }
+        } else if (a == "--dyn-min-ctx")
+            cfg.context.min_ctx = std::atoi(next("--dyn-min-ctx"));
+        else if (a == "--dyn-max-ctx" || a == "--dynamic-max-ctx")
+            cfg.context.max_ctx = std::atoi(next("--dyn-max-ctx"));
+        else if (a == "--context-summarize") {
+            if (!parse_context_mode(next("--context-summarize"), cfg.context.summarize)) {
+                std::fprintf(stderr, "meitte-server: --context-summarize expects off|on|auto\n");
+                return 2;
+            }
+        } else if (a == "--context-trim") {
+            if (!parse_context_mode(next("--context-trim"), cfg.context.trim)) {
+                std::fprintf(stderr, "meitte-server: --context-trim expects off|on|auto\n");
+                return 2;
+            }
+        } else if (a == "--rope-scaling") {
             if (!parse_rope_scaling_mode(next("--rope-scaling"), cfg.rope.scaling)) {
                 std::fprintf(stderr, "meitte-server: --rope-scaling expects auto|none|linear|yarn|longrope\n");
                 return 2;
@@ -1734,7 +1766,11 @@ int main(int argc, char ** argv) {
                 std::fprintf(stderr, "meitte-server: invalid --cache-type-v\n");
                 return 2;
             }
-        } else if (a == "--flash-attn") {
+        } else if (a == "--kv-unified")
+            cfg.kv_unified = true;
+        else if (a == "--no-kv-unified")
+            cfg.kv_unified = false;
+        else if (a == "--flash-attn") {
             if (!parse_flash_attention_mode(next("--flash-attn"), cfg.flash_attention)) {
                 std::fprintf(stderr, "meitte-server: --flash-attn expects auto|on|off\n");
                 return 2;

@@ -66,6 +66,33 @@ Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the AP
    phrase the test device generically. After a squash-merge, verify the landed tree
    (`git ls-tree`) before pushing anything else.
 
+## Core maintenance contract
+
+- Treat existing and new behavior as fragile. Before editing a shared function, trace all
+  callers, resource ownership, graph ordering, cancellation, and rollback. Fix the cause.
+- Implement behavior in the core before exposing it in CLI or server code. Keep the core
+  usable as `libmeitte` through C++ and a C interface for FFI. Do not expose native backend
+  types, C++ exceptions, or unclear buffer ownership through the C interface.
+- Stay close to mainline llama.cpp, libllama, and libmtmd. Isolate version-sensitive helper
+  APIs in adapters. Add no fork hooks or model-specific patches. Existing overlap support
+  must remain optional; new features must also work with the mainline serial path.
+- When a model or API cannot support a feature, record the trigger, cause, evidence,
+  affected behavior, and possible upstream remedy in `docs/limitations.md`. Do not mask
+  the failure with model names, fabricated tokens, or private graph changes.
+- Keep all execution on CPU, including projectors and draft contexts. GPU and iOS support
+  are out of scope. Prioritize Unix, then Windows, then Android. Android app maintenance
+  and app version changes are deferred for current core development, not release approval.
+- Use ASD-STE100 Simplified Technical English for code comments. Explain ownership and
+  invariants where needed. The standard governs prose, not C++ syntax or upstream names.
+- Use clangd for C/C++ diagnostics and formatting with the repository style. Formatting
+  and diagnostics do not replace compilation, focused tests, and byte-identity gates.
+- Audit each change and explain its behavior, tests, and limitations to the user. Drop an
+  approach the user rejects; do not reintroduce it under another name.
+- Do not explore `third_party/` or existing build directories. Compilation may consume
+  dependencies; use a fresh isolated directory for checks. Do not edit vendored code.
+- Context growth, summarization, and trimming are opt-in and default off. Configuration
+  and environment resolution belong in frontends, never in the library.
+
 ## Conventions
 
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`,

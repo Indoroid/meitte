@@ -76,9 +76,9 @@ public:
     // After capture, the subset of those weights the graph only ever GATHERS ROWS from — the shape a
     // token embedding table has, and the one residency policy can exploit (see IRowSource). A name is
     // in this set only if EVERY node that referenced the tensor was a row gather taking it as the
-    // table, and every such gather's index was materialized before the node ran (a graph input, or a
-    // view of one). One reference of any other kind — a matmul over the same tensor, which is what
-    // tied embeddings used as the output head look like — disqualifies it, because the whole tensor
+    // table, and every such gather uses I32 indices. Computed indices add an eval barrier before the
+    // gather. One reference of any other kind - a matmul over the same tensor, which is what
+    // tied embeddings used as the output head look like - disqualifies it, because the whole tensor
     // is then read and row residency would be a fault per row.
     //
     // Derived from what the graph did, not from tensor names: no architecture appears in this rule,
@@ -294,7 +294,9 @@ private:
     // gather, and every weight seen in any way that rules that out. The verdict is the difference.
     std::unordered_set<std::string> row_gathered_;
     std::unordered_set<std::string> row_disqualified_; // non-expert weight leaves (see captured_weights)
-    std::vector<int32_t> gathered_;                    // reused scratch for stream-mode id gather
+    std::unordered_set<std::string> row_computed_index_;
+    bool row_computed_indices_ = false;
+    std::vector<int32_t> gathered_; // reused scratch for stream-mode id gather
 
     // Temporal prefetch: K, and the previous token's routed experts per layer (last-token row
     // during prefill). Empty when prefetch is off or a layer has not been seen yet.

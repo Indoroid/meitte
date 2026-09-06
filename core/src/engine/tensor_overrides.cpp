@@ -16,6 +16,7 @@ std::map<std::string, ggml_backend_buffer_type_t> registered_buffer_types() {
     std::map<std::string, ggml_backend_buffer_type_t> types;
     for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
         ggml_backend_dev_t device = ggml_backend_dev_get(i);
+        if (ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_CPU) continue;
         ggml_backend_buffer_type_t type = ggml_backend_dev_buffer_type(device);
         if (type) types.emplace(ggml_backend_buft_name(type), type);
     }

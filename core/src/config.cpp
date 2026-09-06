@@ -150,6 +150,19 @@ bool parse_tensor_buffer_overrides(const std::string & value,
     return false;
 }
 
+bool parse_context_mode(const std::string & value, ContextMode & out) {
+    const auto mode = lower(value);
+    if (mode == "off" || mode == "false")
+        out = ContextMode::Off;
+    else if (mode == "on" || mode == "true")
+        out = ContextMode::On;
+    else if (mode == "auto")
+        out = ContextMode::Auto;
+    else
+        return false;
+    return true;
+}
+
 ValidationResult validate(const RunConfig & cfg) {
     ValidationResult r;
     auto fail = [&](std::string msg) {
@@ -170,6 +183,12 @@ ValidationResult validate(const RunConfig & cfg) {
     if (cfg.n_ctx <= 0) {
         return fail("n_ctx must be positive");
     }
+    const auto & policy = cfg.context;
+    if (policy.min_ctx < 0 || policy.max_ctx < 0 || (policy.min_ctx && policy.min_ctx > cfg.n_ctx) ||
+        (policy.max_ctx && policy.max_ctx < cfg.n_ctx))
+        return fail("context bounds must satisfy dyn-min-ctx <= ctx-size <= dyn-max-ctx");
+    if (policy.grow != ContextMode::Off && !policy.max_ctx)
+        return fail("dynamic context requires an explicit dyn-max-ctx");
     // These are llama.cpp sentinels, not Meitte defaults: zero defers the frequency to the GGUF
     // and -1 defers a YaRN tuning constant to llama.cpp/model metadata. Reject NaN and infinity
     // here, before a context is constructed, because they otherwise reach the RoPE graph unchecked.
@@ -205,8 +224,13 @@ ValidationResult validate(const RunConfig & cfg) {
     if (!cfg.media_paths.empty() && !cfg.multimodal.enabled()) {
         return fail("media input requires --mmproj");
     }
+    if (cfg.multimodal.offload) return fail("Meitte is CPU-only; projector offload is not supported");
     if (cfg.multimodal.batch_max_tokens <= 0) {
         return fail("multimodal.batch_max_tokens must be positive");
+    }
+    if (!std::isfinite(cfg.multimodal.video_fps) || cfg.multimodal.video_fps <= 0.0f ||
+        cfg.multimodal.video_max_frames <= 0 || !cfg.multimodal.media_max_bytes) {
+        return fail("multimodal video frame rate, frame limit, and byte limit must be positive");
     }
     if (cfg.multimodal.image_min_tokens < -1 || cfg.multimodal.image_max_tokens < -1) {
         return fail("multimodal image token limits must be -1 (metadata default) or >= 0");

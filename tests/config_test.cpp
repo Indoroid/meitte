@@ -91,6 +91,15 @@ int main() {
             type = KvCacheType::Q4_0;
             return !parse_kv_cache_type("nope", type) && type == KvCacheType::Q4_0;
         }());
+        expect_true("context mode parser covers frontend values", [&] {
+            ContextMode mode = ContextMode::Off;
+            return parse_context_mode("ON", mode) && mode == ContextMode::On && parse_context_mode("auto", mode) &&
+                   mode == ContextMode::Auto && parse_context_mode("false", mode) && mode == ContextMode::Off;
+        }());
+        expect_true("unknown context mode leaves output unchanged", [&] {
+            ContextMode mode = ContextMode::On;
+            return !parse_context_mode("sometimes", mode) && mode == ContextMode::On;
+        }());
     }
     {
         std::vector<TensorBufferOverride> overrides;
@@ -133,6 +142,31 @@ int main() {
         RunConfig c = ok_base();
         c.n_ctx = -1;
         expect_fail("n_ctx must be positive", c);
+    }
+    {
+        RunConfig c = ok_base();
+        c.context.grow = ContextMode::Auto;
+        expect_fail("dynamic context requires a maximum", c);
+        c.context.max_ctx = 4096;
+        expect_ok("bounded automatic context growth", c);
+        c.context.min_ctx = c.n_ctx;
+        expect_ok("dynamic minimum can equal the opening context", c);
+        c.context.min_ctx = c.n_ctx + 1;
+        expect_fail("dynamic minimum cannot exceed the opening context", c);
+        c.context.min_ctx = 0;
+        c.context.max_ctx = c.n_ctx - 1;
+        expect_fail("dynamic maximum cannot be below opening context", c);
+    }
+    {
+        auto c = ok_base();
+        c.multimodal.video_fps = 0.0f;
+        expect_fail("video frame rate must be positive", c);
+        c = ok_base();
+        c.multimodal.video_max_frames = 0;
+        expect_fail("video frame limit must be positive", c);
+        c = ok_base();
+        c.multimodal.media_max_bytes = 0;
+        expect_fail("media byte limit must be positive", c);
     }
     {
         // Sentinel defaults are forwarded to llama.cpp unchanged. Only impossible floating-point

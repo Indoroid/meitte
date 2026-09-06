@@ -296,8 +296,8 @@ static void print_usage(const char * argv0) {
         "                          incompatible with --moe-stream and never repacks the GGUF\n"
         "      --list-buffer-types print available llama.cpp buffer types and exit\n"
         "  -mm, --mmproj PATH      multimodal projector gguf\n"
-        "      --mmproj-offload    allow projector GPU offload (default)\n"
-        "      --no-mmproj-offload keep projector on CPU\n"
+        "      --mmproj-offload    unsupported in this CPU-only build\n"
+        "      --no-mmproj-offload keep projector on CPU (default)\n"
         "      --image PATH        one-shot image input; repeatable\n"
         "      --audio PATH        one-shot audio input (wav/mp3/flac); repeatable\n"
         "      --media PATH        one-shot image/audio alias; repeatable\n"
@@ -308,6 +308,12 @@ static void print_usage(const char * argv0) {
         "  -n, --n-predict N       tokens to generate (default 128)\n"
         "  -t, --threads N         compute threads (default 4)\n"
         "  -c, --ctx-size N        context size (default 2048)\n"
+        "      --dynamic-ctx MODE   context growth: off|on|auto (requires --dyn-max-ctx)\n"
+        "      --dyn-min-ctx N      lower bound for the opening context (default --ctx-size)\n"
+        "      --dyn-max-ctx N      final RoPE/YaRN-opened context size\n"
+        "      --dynamic-max-ctx N  compatibility alias for --dyn-max-ctx\n"
+        "      --context-summarize MODE summarize old turns: off|on|auto (lossy)\n"
+        "      --context-trim MODE  remove old complete turns: off|on|auto (lossy)\n"
         "      --rope-scaling MODE  RoPE method: auto|none|linear|yarn|longrope (default auto)\n"
         "      --rope-scale N       context extension factor; sets RoPE frequency scale to 1/N\n"
         "      --rope-freq-base N   RoPE frequency base; 0 keeps GGUF metadata\n"
@@ -335,6 +341,8 @@ static void print_usage(const char * argv0) {
         "      --chat-template-file PATH read a chat template from a file\n"
         "      --cache-type-k TYPE      KV key cache: f32,f16,bf16,q8_0,q5_0,q5_1,q4_0,q4_1,iq4_nl\n"
         "      --cache-type-v TYPE      KV value cache (quantized V needs Flash Attention)\n"
+        "      --kv-unified             use one unified KV cache (default off)\n"
+        "      --no-kv-unified          use separate per-sequence KV caches\n"
         "      --flash-attn MODE        Flash Attention: auto|on|off (default auto)\n"
         "      --progress          emit machine telemetry (one JSON line per token)\n"
         "      --session           keep the model loaded and serve JSON prompt requests from stdin\n"
@@ -590,7 +598,26 @@ int main(int argc, char ** argv) {
             cfg.n_threads = std::atoi(next("-t"));
         else if (a == "-c" || a == "--ctx-size")
             cfg.n_ctx = std::atoi(next("-c"));
-        else if (a == "--rope-scaling") {
+        else if (a == "--dynamic-ctx") {
+            if (!parse_context_mode(next("--dynamic-ctx"), cfg.context.grow)) {
+                std::fprintf(stderr, "bmoe: --dynamic-ctx expects off|on|auto\n");
+                return 2;
+            }
+        } else if (a == "--dyn-min-ctx")
+            cfg.context.min_ctx = std::atoi(next("--dyn-min-ctx"));
+        else if (a == "--dyn-max-ctx" || a == "--dynamic-max-ctx")
+            cfg.context.max_ctx = std::atoi(next("--dyn-max-ctx"));
+        else if (a == "--context-summarize") {
+            if (!parse_context_mode(next("--context-summarize"), cfg.context.summarize)) {
+                std::fprintf(stderr, "bmoe: --context-summarize expects off|on|auto\n");
+                return 2;
+            }
+        } else if (a == "--context-trim") {
+            if (!parse_context_mode(next("--context-trim"), cfg.context.trim)) {
+                std::fprintf(stderr, "bmoe: --context-trim expects off|on|auto\n");
+                return 2;
+            }
+        } else if (a == "--rope-scaling") {
             if (!parse_rope_scaling_mode(next("--rope-scaling"), cfg.rope.scaling)) {
                 std::fprintf(stderr, "bmoe: --rope-scaling expects auto|none|linear|yarn|longrope\n");
                 return 2;
@@ -703,7 +730,11 @@ int main(int argc, char ** argv) {
                 std::fprintf(stderr, "bmoe: --cache-type-v expects f32|f16|bf16|q8_0|q5_0|q5_1|q4_0|q4_1|iq4_nl\n");
                 return 2;
             }
-        } else if (a == "--flash-attn") {
+        } else if (a == "--kv-unified")
+            cfg.kv_unified = true;
+        else if (a == "--no-kv-unified")
+            cfg.kv_unified = false;
+        else if (a == "--flash-attn") {
             if (!parse_flash_attention_mode(next("--flash-attn"), cfg.flash_attention)) {
                 std::fprintf(stderr, "bmoe: --flash-attn expects auto|on|off\n");
                 return 2;

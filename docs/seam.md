@@ -9,8 +9,10 @@ contracts so they can be re-verified when the submodule is updated.
 Multimodal input uses llama.cpp's separately built `mtmd` library. The dependency is private to
 `core/src/multimodal/mtmd_runtime.cpp`: public bmoe headers expose projector configuration,
 media byte buffers, and ordered content parts without including mtmd headers. The adapter creates
-the projector context, derives the model-owned media marker, preprocesses image/audio bytes, and
-evaluates the resulting chunks against the existing text-model context.
+the projector context, derives the model-owned media marker, preprocesses image/audio bytes, samples
+video through upstream's FFmpeg helper, and evaluates each resulting chunk against the existing
+text-model context. Per-batch observers map route, compute, and I/O traces to the positions supplied
+by mtmd; no projector or graph type crosses the public bmoe interface.
 
 This boundary does not alter expert tensor layout or routing. After multimodal prefill, generation
 uses the same public llama model/context APIs and the same expert-stream callback described below.
@@ -69,10 +71,12 @@ It is rejected with `--moe-stream`, because an arbitrary regex could place a str
 different buffer and invalidate the native-offset rebinding contract. `--list-buffer-types` reports
 the buffer names registered by the current build.
 
-## 3. Context and RoPE controls
+## 3. Context, KV-cache, and RoPE controls
 
-The context adapter writes the public `llama_context_params` fields directly: `n_ctx`,
+The context adapter writes the public `llama_context_params` fields directly: `n_ctx`, `kv_unified`,
 `rope_scaling_type`, `rope_freq_base`, `rope_freq_scale`, and the YaRN factors/original context.
+`--kv-unified` and `--no-kv-unified` select libllama's cache layout without changing its memory
+implementation or exposing a backend type through the core API.
 `--rope-scaling auto` leaves the method unspecified so llama.cpp selects the GGUF-trained method;
 the explicit methods are `none`, `linear`, `yarn`, and `longrope`. LongRope remains model-owned:
 llama.cpp selects the GGUF's long/short factor tensors from the configured context length, so this
@@ -178,6 +182,13 @@ that belongs to this project: **the eval callback is per-context**. The streamer
 block's expert layer if the draft context carries the same `cb_eval`, and `init_from_params` derives
 its context parameters from a full `common_params` with no way to inject one. See
 [mtp.md](mtp.md).
+
+The draft-source boundary is independent from media preprocessing. N-gram drafting consumes only
+confirmed text token IDs and therefore works after a media prefill. MTP does not: the upstream
+`common_speculative_process` path processes token batches but does not forward `batch.embd` media
+embeddings to the draft context. The engine rejects that combination instead of duplicating the
+version-sensitive helper or fabricating replacement tokens. An upstream mixed token/embedding
+speculative API would remove this restriction.
 
 Unlike the public-C-API streaming seam, `common` is **not a stable API** — it can change
 between upstream versions. So a submodule bump may require updating this chat glue in

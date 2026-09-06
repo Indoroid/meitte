@@ -46,6 +46,12 @@ for its own tokens, not a full re-prefill — which matters because prefill is t
 device. `BMOE_DONE.n_prompt` reports the tokens actually prefilled this turn; `n_past` is the total
 context length after it.
 
+**KV layout.** `RunConfig::kv_unified` is passed unchanged through `SessionConfig` to the public
+`llama_context_params::kv_unified` field. Both frontends expose it as `--kv-unified` and
+`--no-kv-unified`; the latter is the default. The setting also reaches an MTP draft context because
+that context starts from the same libllama parameters. This controls libllama's cache layout. It
+does not create independent server conversations or change Meitte's one-sequence ownership model.
+
 **Fallbacks and costs.** SWA-style memory (e.g. Gemma) can refuse a partial `seq_rm`; the engine
 then clears the KV and re-prefills the whole prompt for that turn (correct, just slower). With
 thinking **on**, the template strips the previous turn's reasoning on re-render, so the rendered
@@ -69,13 +75,50 @@ true`. In chat mode a cancel **rolls the turn back** to the reused prefix (dropp
 and un-appending the user message) so prior turns stay usable and the conversation can continue.
 Cancel is distinct from a fatal streaming error, which is sticky and ends the session.
 
-## Fixed context
+## Context capacity and opt-in recovery
 
 `n_ctx`, `n_batch`, and `n_ubatch` are baked into the llama context at `open()`, before any prompt is
 known. The frontends default to a 2048-token logical batch and a 512-token physical batch; both are
 capped to the configured context. Use `--batch-size` to set the prefill chunk and `--ubatch-size` to
-trade prefill throughput for resident compute-buffer memory. A request that would overflow `n_ctx`
-is rejected without tearing the session down.
+trade prefill throughput for resident compute-buffer memory. By default, a request that would overflow
+`n_ctx` is rejected without tearing the session down.
+
+The core `ContextPolicy` can opt into recovery. It first grows to an explicit `max_ctx`, then can
+summarize the oldest complete user turn, then can remove that turn. `Auto` reserves the request's
+output budget before prefill; `On` waits until capacity is reached. Summarization and trimming are
+lossy, never remove the newest turn, and do not remove a turn that contains a media marker. A failed
+or cancelled turn restores the transcript and clears any partial rebuilt KV so the next request can
+prefill safely. RoPE scaling controls token positions; it does not allocate a larger context.
+
+Both frontends expose the core policy directly:
+
+```text
+--dynamic-ctx off|on|auto
+--dyn-min-ctx N
+--dyn-max-ctx N
+--context-summarize off|on|auto
+--context-trim off|on|auto
+```
+
+The bounds must satisfy `dyn-min-ctx <= ctx-size <= dyn-max-ctx`. `--ctx-size` is the opening
+context. Growth recreates the context with the same RoPE/YaRN parameters until it reaches
+`--dyn-max-ctx`, so that maximum is the final RoPE/YaRN-opened context. `on` reacts when the current
+context reaches capacity; `auto` reserves the request's output allowance before prefill.
+Summarization and trimming operate on chat history, so they need chat templating or a server chat
+request. All recovery controls remain off by default, and bounds alone do not enable growth.
+
+`--dynamic-max-ctx` remains accepted as a compatibility alias for `--dyn-max-ctx`.
+
+## C and Python FFI
+
+Set `-DBMOE_BUILD_SHARED=ON` to build and install `libmeitte` (`meitte.dll` on Windows). Its
+versioned C API in `core/include/bmoe/meitte.h` uses opaque sessions and results, caller-owned
+input spans, synchronous borrowed token callbacks, cancellation, and explicit destruction. Each
+configuration and request has a size tag; older prefixes use the defaults for later fields.
+
+[`examples/python/ctypes_smoke.py`](../examples/python/ctypes_smoke.py) first checks the C error
+ownership path without a model. Pass `--model /path/to/model.gguf` to also exercise callback and
+result ownership, or `--cancel-after 1` to check callback cancellation.
 
 ## CLI and app
 
@@ -87,6 +130,8 @@ limits only the template's reasoning span (`0` closes it at once), not the final
 `n_predict` allowance. `--reasoning-preserve` and `--no-reasoning-preserve` pass the model
 template's `preserve_reasoning` setting when it supports that policy. The server also accepts a
 request-local `reasoning_budget_tokens` or `thinking_budget_tokens` value.
+The server's `--alias NAME` sets the model identifier advertised by `/v1/models` and returned in
+completion metadata. Without it, the model filename remains the identifier.
 The Android example runs one such process per model:
 the first prompt loads the model, later prompts reuse the warm process, and the session is freed on
 an explicit **Unload** or after an idle timeout. Changing the model or any streaming setting

@@ -42,10 +42,11 @@ overrides, when used, are limited to fully resident tensors rather than the stre
 
 - `meitte-cli` for local interactive and one-shot inference.
 - `meitte-server` for OpenAI-compatible completions and chat-completions endpoints.
+- Optional `libmeitte` C ABI for FFI callers; a Python `ctypes` smoke example is included.
 - MoE expert streaming with direct I/O where the platform supports it, bounded expert caching, and
   optional cache-aware routing.
-- Multimodal prompt support with an `--mmproj` projector for supported models.
-- Persistent server sessions, custom Jinja chat templates, and configurable KV-cache types.
+- Image, audio, and sampled-video prompts with an `--mmproj` projector for supported models.
+- Persistent server sessions, custom Jinja chat templates, and configurable KV-cache types and layout.
 - Reasoning controls, reasoning budgets, and preserved reasoning/KV state where the selected model
   and template support them.
 - Per-token progress, CSV metrics, route traces, and compute diagnostics for measuring the I/O and
@@ -95,9 +96,20 @@ Start an OpenAI-compatible server:
 ```bash
 build/cli/meitte-server \
   -m /path/to/model.gguf \
+  --alias local-model --kv-unified \
   --moe-stream --cache-mb auto \
   --host 127.0.0.1 --port 8080
 ```
+
+`--alias NAME` sets the model ID returned by `/v1/models` and completion responses. KV layout is
+passed directly to libllama: `--kv-unified` enables its unified cache, while
+`--no-kv-unified` selects the default separate-cache layout.
+
+Context recovery is opt-in. For example,
+`--dyn-min-ctx 2048 --ctx-size 4096 --dynamic-ctx auto --dyn-max-ctx 8192` grows the opening context
+only when a request needs it, up to the final context opened with the configured RoPE/YaRN values.
+`--context-summarize auto` and `--context-trim auto` add lossy recovery for older complete chat
+turns.
 
 For a supported multimodal model, supply its projector:
 

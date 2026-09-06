@@ -46,8 +46,8 @@ bool DenseWeights::init(DenseWeightsMode mode,
         basenames_.push_back(slash == std::string::npos ? p : p.substr(slash + 1));
     }
 
-    hold_back_oversized();
     take_row_gathered();
+    hold_back_oversized();
 
     if (mode_ == DenseWeightsMode::Anonymous || mode_ == DenseWeightsMode::Pinned) {
         if (tensors_.empty()) { // nothing (left) to rebind — behave as Mmap
@@ -166,18 +166,14 @@ RowSourceStats DenseWeights::row_stats() const {
 
 // ── Row-gathered tables: bound to reserved space, served from flash ──────────────────
 //
-// Runs after hold_back_oversized, which is what restricts this to tables that COULD have been
-// resident. That is deliberate rather than incidental: materialize() — the fallback for a graph
-// shape the capture pass never saw — has to be able to pull the whole table in, and a table larger
-// than memory could not honour it. An oversized row-gathered table keeps the mmap policy that was
-// measured for it.
+// Runs before hold_back_oversized because the fallback restores the original mmap instead of
+// allocating a full copy. A row-gathered table can therefore exceed available RAM safely.
 //
 // A table only leaves the resident set once the takeover has actually succeeded, so a failed
 // reservation or a reader that will not open costs nothing but the log line.
 void DenseWeights::take_row_gathered() {
     if (row_pending_.empty()) return;
-    // Intersect with what is still resident-eligible, by tensor identity: the caller's list was
-    // built from the same capture, but hold_back_oversized may have taken some of it already.
+    // Intersect with the dense set by tensor identity. The caller's list came from the same capture.
     std::vector<DenseTensorRef> take;
     for (const DenseTensorRef & want : row_pending_)
         for (const DenseTensorRef & have : tensors_)

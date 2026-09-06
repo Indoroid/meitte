@@ -37,6 +37,7 @@ struct SessionConfig {
     std::string model_path;
     int n_threads = 4;
     int n_ctx = 2048;
+    ContextPolicy context;
     int n_batch = 2048; // prefill chunk capacity; capped at n_ctx in open()
     // Widest graph actually computed at once. 0 = follow n_batch. Sizing this down trades prefill
     // throughput for resident compute buffers, which on this engine compete with the expert cache.
@@ -46,6 +47,7 @@ struct SessionConfig {
     std::string chat_template;
     KvCacheType cache_type_k = KvCacheType::F16;
     KvCacheType cache_type_v = KvCacheType::F16;
+    bool kv_unified = false;
     FlashAttentionMode flash_attention = FlashAttentionMode::Auto;
     RopeConfig rope;
     std::vector<TensorBufferOverride> tensor_buffer_overrides;
@@ -129,9 +131,12 @@ enum class ChatToolChoice {
     None,
 };
 
+enum class MediaKind { Auto = 0, Image = 1, Audio = 2, Video = 3 };
+
 struct MediaInput {
     std::vector<std::uint8_t> bytes;
     std::string name;
+    MediaKind kind = MediaKind::Auto;
 };
 
 struct GenerateRequest {
@@ -140,7 +145,7 @@ struct GenerateRequest {
     // messages verbatim instead of wrapping prompt as one user turn. This keeps HTTP requests
     // stateless while preserving system and assistant messages supplied by OpenAI-style clients.
     std::vector<ChatMessage> messages;
-    // Raw image/audio file bytes. Prompt must contain one projector marker per item; when callers
+    // Raw image, audio, or sampled-video bytes. Prompt must contain one projector marker per item; when callers
     // supply ordinary prompt/messages DriftWood inserts those markers into the user content.
     std::vector<MediaInput> media;
     std::vector<ChatTool> tools;

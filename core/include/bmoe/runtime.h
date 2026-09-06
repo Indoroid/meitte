@@ -32,6 +32,8 @@ struct ToolCall {
 struct RunResult {
     bool ok = false;
     bool cancelled = false; // generation was interrupted by Session::cancel() (ok stays true)
+    bool context_exhausted = false;
+    std::vector<std::string> context_events;
     std::string error;
     std::string generated_text;
     // The reasoning span, when a thinking model's chat template separated it from the answer.

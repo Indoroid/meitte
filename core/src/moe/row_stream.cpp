@@ -95,7 +95,8 @@ const RowStream::Table * RowStream::find(const ggml_tensor * table) const {
 }
 
 bool RowStream::serves(const ggml_tensor * table) const {
-    return find(table) != nullptr;
+    const Table * t = find(table);
+    return t && !t->whole;
 }
 
 void RowStream::touch(Table & t, uint64_t s) {
@@ -214,18 +215,21 @@ bool RowStream::materialize(const ggml_tensor * table) {
     Table * t = find(table);
     if (!t) return true;
     if (t->whole) return true;
-    std::fprintf(stderr,
-                 "bmoe: row-stream — %s is read by a node that is not a row gather; pulling the whole "
-                 "%llu MiB table in\n",
-                 t->ref.tensor->name, (unsigned long long) (t->ref.size >> 20));
-    for (uint64_t s = 0; s < t->n_slabs; ++s)
-        if (!fetch_slab(*t, s)) return false;
-    // A materialized table leaves the LRU: it is resident for the rest of the run, and an eviction
-    // that took one of its slabs would put us right back at the fault this call exists to avoid.
+    // The original mapping still owns the bytes. Restore it before the consumer runs instead
+    // of allocating a whole table that may exceed RAM. No kernel or file layout changes.
+    std::fprintf(stderr, "bmoe: row-stream — %s fell back to its original mapping\n", t->ref.tensor->name);
+    t->ref.tensor->data = t->orig_data;
     for (uint64_t s = 0; s < t->n_slabs; ++s) {
         if (t->spot[(size_t) s] != lru_.end()) {
             lru_.erase(t->spot[(size_t) s]);
             t->spot[(size_t) s] = lru_.end();
+        }
+        if (t->resident[(size_t) s]) {
+            const uint64_t off = s * slab_bytes;
+            const uint64_t bytes = std::min(round_up(slab_len(t->ref.size, s, slab_bytes), page_), t->span - off);
+            pio::vm_evict(t->base + off, (size_t) bytes);
+            resident_bytes_.fetch_sub(bytes, std::memory_order_relaxed);
+            t->resident[(size_t) s] = 0;
         }
     }
     t->whole = true;

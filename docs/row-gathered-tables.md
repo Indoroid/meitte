@@ -25,23 +25,19 @@ the node used it*. A table qualifies only when both hold:
 
 1. **Every** reference to it in the captured graph is a row gather (`GGML_OP_GET_ROWS`) with the
    table in the source position. One reference of any other kind disqualifies it.
-2. Every such gather's index tensor is already materialized when the node runs: a graph input, or
-   a pure view of one. An index computed inside the graph cannot be read before the node that
-   produces it has run.
+2. Every such gather uses contiguous `I32` indices. If the graph computes them, the eval callback
+   isolates integer producers so their data is ready before the gather reads it.
 
 Both conditions are properties of the graph, so the rule carries to architectures nobody had in
 mind when it was written:
 
 - A model with **tied embeddings**, where `token_embd` is also the output head, fails rule 1 on
   the head's matmul and keeps the residency it had. No special case, on any architecture.
-- Qwen3.8-Flash-Next's **n-gram table** (`per_layer_token_embd`, ~27 GB) *is* row-gathered, but by
-  hashes computed inside the graph, so it fails rule 2 and falls through to the size guard that
-  was measured for it: mmap'd with random-access advice (see [architecture.md](architecture.md)
-  and the 0.22.0 changelog entry).
+- A table indexed by hashes computed inside the graph can now qualify without a model-specific
+  rule. The barrier is selected from graph type and use, and row IDs are read only after completion.
 
-The policy is also restricted to tables that could have been resident at all, which is to say it
-runs after that size guard. That is deliberate: the fallback below has to be able to pull a whole
-table in, and a table larger than memory could not honour it.
+The fallback does not allocate or pull in a second whole copy. It restores the table's original
+mmap pointer, so a table larger than RAM can still safely leave row streaming.
 
 ## Mechanism
 
@@ -59,10 +55,10 @@ cache plays on `mul_mat_id`, at row granularity instead of expert granularity.
   than reading a row at a time, and the slabs the gather in flight needs are never evicted under
   it.
 - **Ordered reads.** A gather's slabs are deduplicated and issued in ascending file order.
-- **A fallback with teeth.** `IRowSource::materialize()` pulls the whole table in and says so on
-  stderr. It fires if a graph shape the capture pass never saw reads a served table any other way,
-  or if a gather's index turns out to be unreadable. The engine is then simply back to the
-  behaviour it would have had without the flag.
+- **A safe fallback.** `IRowSource::materialize()` restores the original mmap and says so on stderr.
+  It fires if a graph shape the capture pass never saw reads a served table any other way, or if a
+  gather's index is not readable contiguous `I32`. The engine is then back to the behavior it would
+  have had without the flag, without allocating the whole table.
 
 The policy applies **under every `--dense-weights` mode**, because what it changes is not how a
 mode works but which tensors the mode is applied to. A table it takes over leaves the resident

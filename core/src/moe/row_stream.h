@@ -15,10 +15,10 @@
 //
 // WHICH tables get this is not a list in this file and not a name pattern: it is what the graph
 // says (see RouterHook's capture pass). A table qualifies only when EVERY reference to it in the
-// captured graph is a row gather, and the index it is gathered by is materialized before the node
-// runs. Anything else — a weight that is also multiplied, tied embeddings used as the output head,
-// an index computed inside the graph — is not served here and keeps the dense policy it had.
-// materialize() is the belt to that braces: a graph shape we never saw still gets its bytes.
+// captured graph is a row gather. Computed I32 indices add an eval barrier before the gather.
+// Anything else - a weight that is also multiplied or tied embeddings used as the output head -
+// is not served here and keeps the dense policy it had. materialize() restores the original mmap
+// when a later graph uses a shape that capture did not see.
 //
 // The residency window is bounded (`budget_bytes`) and evicted LRU, in page-aligned SLABS rather
 // than single rows: a row is ~1 KiB, a read below the device's request floor costs the same as one
@@ -92,7 +92,7 @@ private:
         // a resident slab in it (end() when not resident).
         std::vector<std::list<std::pair<size_t, uint64_t>>::iterator> spot;
         void * orig_data = nullptr; // what the tensor pointed at before we bound it, restored on release
-        bool whole = false;         // materialize() has pulled everything; gather() is then a no-op
+        bool whole = false;         // materialize() restored the original mmap; gather() is then a no-op
     };
 
     // Make slab `s` of `t` present, reading it from the shard. No-op when already resident.

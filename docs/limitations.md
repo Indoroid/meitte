@@ -18,6 +18,27 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
 
 ## Limitations
 
+- **Unified KV is a libllama layout option, not server concurrency.** `--kv-unified` works in the
+  core, CLI, and server and is passed directly to libllama. Meitte still owns one sequence and the
+  server still processes one conversation at a time, so the flag does not provide independent
+  concurrent conversations. `--no-kv-unified` remains the default.
+- **MTP cannot continue from media embeddings.** A request with current or preserved media and an
+  MTP draft source fails before prefill. Upstream `common_speculative_process` handles token batches
+  but does not forward `batch.embd` to the draft context. N-gram drafting works because it needs only
+  confirmed text IDs. The remedy is an upstream mixed token/embedding speculative API, not a local
+  copy of its draft driver.
+- **Video input is bounded sampled prefill.** It requires an mtmd vision projector, an mtmd build
+  with video enabled, and FFmpeg/ffprobe. The default is 1 frame/s and 32 frames. Live video and
+  soundtrack extraction are not supported. The Unix-only FFmpeg audio fallback is also absent on
+  Windows; formats decoded directly by mtmd still work there.
+- **Context summarization and trimming lose information.** They are opt-in core policies, protect
+  the newest and media-bearing turns, and report every action in `RunResult::context_events`.
+  The CLI and server expose them, but keep them off by default. Without an enabled recovery policy,
+  overflow remains a non-fatal error.
+- **Computed row indices add synchronization.** `--row-stream` isolates `I32` graph producers when
+  a qualifying table uses computed indices. This is generic and preserves the mainline graph, but
+  its cost has not been measured on device. The option remains off by default.
+
 - **Two settings make output non-reproducible.** Every other knob is deterministic given a
   configuration: `--n-expert-used` changes the output, but changes it the same way on every run.
   [`--drop-cold-experts`](expert-dropping.md) and
@@ -28,9 +49,8 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
 - **n=1 only.** The expert sparsity exists only for single-token decode, so streaming is
   incompatible with speculative decoding or batching. Prefill streams the union of the
   prompt's routed experts (still far below the full bank, but larger than one token's).
-- **CPU experts.** Streamed experts are computed on CPU; the rebind targets host memory.
-  GPU offload of the streamed experts is not supported (the dense parts can still use the
-  GPU). Decode is flash-I/O-bound anyway, so this is rarely the bottleneck.
+- **CPU execution only.** Models, streamed experts, projectors, and draft contexts use CPU buffers.
+  GPU offload and iOS targets are outside the current plan.
 - **Shared experts stay resident.** Architectures with an always-on shared expert (e.g.
   `gemma4`, `deepseek4`) stream the routed experts but keep the shared expert — and any dense layers —
   resident (in the page cache, or in the engine's own buffers under `--dense-weights anon`),

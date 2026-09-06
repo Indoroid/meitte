@@ -19,7 +19,7 @@ cmake_minimum_required(VERSION 3.21)
 # The version is declared here and nowhere else in the build: the engine reports it (meitte-cli
 # --version, and the run-parameter preamble of every metrics CSV), so a committed benchmark file
 # says which engine produced it. Keep it in step with CHANGELOG.md and the app's versionName.
-project(bigmoeonedge VERSION 0.23.0 LANGUAGES CXX)
+project(bigmoeonedge VERSION 0.23.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,6 +31,7 @@ endif()
 
 option(BMOE_BUILD_TESTS "Build byte-identity gates and unit tests" ON)
 option(BMOE_BUILD_CLI   "Build the meitte-cli host tool"            ON)
+option(BMOE_BUILD_SHARED "Build libmeitte for C++ and C/FFI callers" OFF)
 # Off by default: diagnostics, not part of the product. They need no llama.cpp, so they can be
 # configured and cross-compiled on their own without building the engine.
 option(BMOE_BUILD_TOOLS "Build standalone diagnostic tools (bmoe-iobench)" OFF)
@@ -54,10 +55,14 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     set(LLAMA_BUILD_TOOLS    OFF CACHE BOOL "" FORCE)
     # Build llama.cpp's multimodal projector library without its CLI/server tools.
     set(LLAMA_BUILD_MTMD     ON  CACHE BOOL "" FORCE)
-    # v1 handles image/audio buffers; video helper policy comes later.
-    set(MTMD_VIDEO           OFF CACHE BOOL "" FORCE)
+    # Use upstream's FFmpeg-backed sampled-video helper.
+    set(MTMD_VIDEO           ON  CACHE BOOL "" FORCE)
     set(LLAMA_CURL           OFF CACHE BOOL "" FORCE)  # common's model-download path unused
     add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
+endif()
+
+if(BMOE_BUILD_SHARED AND NOT BMOE_HAVE_LLAMA)
+    message(FATAL_ERROR "BMOE_BUILD_SHARED requires the llama.cpp submodule")
 endif()
 
 add_subdirectory(core)

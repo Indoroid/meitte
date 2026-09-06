@@ -381,11 +381,15 @@ struct SpecConfig {
 // MoE streaming rules; this controls only llama.cpp's mtmd projector.
 struct MultimodalConfig {
     std::string mmproj_path;
-    bool offload = true;
+    bool offload = false;
     bool warmup = true;
     int image_min_tokens = -1;
     int image_max_tokens = -1;
     int batch_max_tokens = 1024;
+    float video_fps = 1.0f;
+    int video_max_frames = 32;
+    std::string ffmpeg_bin_dir;
+    uint64_t media_max_bytes = 64ull * 1024 * 1024;
 
     bool enabled() const { return !mmproj_path.empty(); }
 };
@@ -404,6 +408,16 @@ bool parse_tensor_buffer_overrides(const std::string & value,
                                    std::vector<TensorBufferOverride> & out,
                                    std::string & error);
 
+enum class ContextMode { Off, On, Auto };
+struct ContextPolicy {
+    ContextMode grow = ContextMode::Off;
+    ContextMode summarize = ContextMode::Off;
+    ContextMode trim = ContextMode::Off;
+    int min_ctx = 0; // 0 makes the opening context the lower bound.
+    int max_ctx = 0; // Final context opened with the same RoPE configuration; required for growth.
+};
+bool parse_context_mode(const std::string & value, ContextMode & out);
+
 // A full run: model, prompt, decoding, streaming, telemetry.
 struct RunConfig {
     std::string model_path;
@@ -414,6 +428,7 @@ struct RunConfig {
     int n_predict = 128;
     int n_threads = 4;
     int n_ctx = 2048;
+    ContextPolicy context;
 
     // Logical prefill chunk capacity. Capped at n_ctx when the session opens.
     int n_batch = 2048;
@@ -439,6 +454,7 @@ struct RunConfig {
     std::string chat_template;
     KvCacheType cache_type_k = KvCacheType::F16;
     KvCacheType cache_type_v = KvCacheType::F16;
+    bool kv_unified = false;
     FlashAttentionMode flash_attention = FlashAttentionMode::Auto;
     RopeConfig rope;
 

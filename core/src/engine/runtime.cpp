@@ -12,12 +12,14 @@ SessionConfig session_config_from(const RunConfig & cfg) {
     sc.model_path = cfg.model_path;
     sc.n_threads = cfg.n_threads;
     sc.n_ctx = cfg.n_ctx;
+    sc.context = cfg.context;
     sc.n_batch = cfg.n_batch;
     sc.n_ubatch = cfg.n_ubatch;
     sc.chatml = cfg.chatml || !cfg.chat_template.empty() || !cfg.system_prompt.empty();
     sc.chat_template = cfg.chat_template;
     sc.cache_type_k = cfg.cache_type_k;
     sc.cache_type_v = cfg.cache_type_v;
+    sc.kv_unified = cfg.kv_unified;
     sc.flash_attention = cfg.flash_attention;
     sc.rope = cfg.rope;
     sc.tensor_buffer_overrides = cfg.tensor_buffer_overrides;
@@ -53,7 +55,7 @@ RunResult run(const RunConfig & cfg,
     for (const std::string & path : cfg.media_paths) {
         MediaInput input;
         std::string media_error;
-        if (!load_media_file(path, input, media_error)) {
+        if (!load_media_file(path, cfg.multimodal.media_max_bytes, input, media_error)) {
             RunResult r;
             r.error = media_error;
             return r;

@@ -1,7 +1,7 @@
 # Multimodal input
 
-Driftwood can combine a text GGUF with a llama.cpp mtmd projector. The projector handles image or
-audio preprocessing and prefill; token generation and MoE expert streaming continue through the
+Driftwood can combine a text GGUF with a llama.cpp mtmd projector. The projector handles image,
+audio, or sampled-video preprocessing and prefill; token generation and MoE expert streaming continue through the
 normal text-model path.
 
 ## meitte-cli
@@ -12,11 +12,14 @@ build/cli/meitte-cli -m model.gguf --mmproj mmproj.gguf \
 ```
 
 - `--image PATH`, `--audio PATH`, and the format-detecting `--media PATH` alias are repeatable.
-- `--mmproj-offload` is the default; `--no-mmproj-offload` keeps projector work on CPU.
+- Projector work is CPU-only. `--mmproj-offload` is rejected.
 - `--image-min-tokens` and `--image-max-tokens` override dynamic image-token bounds; `-1`
   retains projector metadata.
 - `--mtmd-batch-max-tokens N` limits projector output per prefill batch.
 - File-backed media is one-shot only. `--session` rejects these flags rather than ignoring them.
+- `--media clip.mp4` uses upstream mtmd video support. The core samples at 1 frame per second and
+  accepts at most 32 frames by default. FFmpeg and ffprobe must be on `PATH`; embedders can set
+  `MultimodalConfig::ffmpeg_bin_dir`, `video_fps`, and `video_max_frames`.
 
 ## meitte-server
 
@@ -52,9 +55,14 @@ limited to 32 MiB, all decoded media in one request to 64 MiB, and the HTTP body
 - `meitte-server --kv-preserve` retains one incremental conversation. After the image request, send
   only the next user message to `POST /v1/chat/completions`; `{"clear_kv":true}` begins a new
   conversation. This state is server-wide, not isolated per HTTP client.
-- MTP and n-gram speculation are rejected for media requests.
-- Route, compute, and I/O tracing are rejected during multimodal prefill.
-- Video input is not built.
+- N-gram speculation works after media prefill and uses only the trailing text token history.
+  MTP is rejected because upstream's speculative helper does not process embedding batches.
+- Route, compute, and I/O tracing include multimodal prefill batches and use their decoder positions.
+- Video is sampled input only. Live streams, soundtrack extraction, and frame resampling beyond the
+  upstream helper are not implemented. Input and decoded media are bounded by the configured byte limit.
+- On Unix, an audio buffer that mtmd cannot decode is converted to mono float PCM by a bounded,
+  cancellable FFmpeg child process. Windows accepts formats decoded directly by mtmd but does not use
+  this fallback yet.
 
 These combinations fail with explicit errors. Text-only requests remain available while the
 projector is loaded.

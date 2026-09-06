@@ -161,6 +161,12 @@ int main() {
     check(completion_delta.contains("usage") && completion_delta["usage"].is_null(),
           "ordinary SSE chunks carry null usage when requested");
 
+    ServerState model_state;
+    model_state.session_cfg.model_path = "/models/original.gguf";
+    check(loaded_model_id(model_state) == "original.gguf", "server defaults to the model filename");
+    model_state.srv_cfg.model_alias = "friendly-name";
+    check(loaded_model_id(model_state) == "friendly-name", "server alias replaces the advertised model name");
+
     const json chat_delta =
         json::parse(make_stream_delta(true, "chatcmpl-1", "chat.completion.chunk", 1, "local-model", "hi"));
     check(chat_delta["choices"][0]["delta"].value("content", "") == "hi", "chat SSE uses choices[].delta.content");

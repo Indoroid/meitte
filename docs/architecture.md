@@ -28,9 +28,10 @@ core/
                 row_stream - row-gathered tables served from flash (see row-gathered-tables.md)
     engine/     session — composition + the generation loop (open/generate/close)
                 runtime — the one-shot run() wrapper over a Session
+                c_api — stable opaque handles for C and FFI callers
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
                 thinking_control — how "thinking off" is honoured, probed per model
-    multimodal/ mtmd projector adapter + file-backed media input
+    multimodal/ mtmd projector adapter + bounded file, FFmpeg audio, and sampled-video input
     metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink
 third_party/
   llama.cpp     upstream submodule; public-API consumer, plus one optional overlap hook
@@ -98,9 +99,14 @@ The composition root is `Session` (core/src/engine/session.cpp):
 so the gates and the interactive session share the same code path.
 
 When a projector is configured, `Session` owns it beside the text model. mtmd preprocesses
-ordered image/audio bytes and evaluates their embeddings during prefill; ordinary text decode,
+ordered image/audio bytes or sampled video frames and evaluates their embeddings during prefill; ordinary text decode,
 expert routing, cache policy, and token generation remain on the same text-model path. The public
 session API carries byte buffers and content-part indices, not llama.cpp mtmd types.
+
+`BMOE_BUILD_SHARED=ON` builds `libmeitte` with the C++ API and the small C ABI in `bmoe/meitte.h`.
+The C ABI uses opaque session/result handles, copies request media before generation, reports errors
+as owned result strings or caller-provided buffers, and does not let exceptions or llama.cpp types cross it.
+Installation places the matching llama, mtmd, and ggml runtime libraries beside `libmeitte`.
 
 Greedy sampling makes the output a deterministic function of the graph — the property the
 [byte-identity gates](../tests/moe_gates.cpp) assert. That holds with the lossy knobs off. Under
