@@ -45,6 +45,8 @@ overrides, when used, are limited to fully resident tensors rather than the stre
 - Optional `libmeitte` C ABI for FFI callers; a Python `ctypes` smoke example is included.
 - MoE expert streaming with direct I/O where the platform supports it, bounded expert caching, and
   optional cache-aware routing.
+- Optional model-mapping release after a safe streamed load. This restores concurrent unbuffered
+  read scaling on Windows and also fixes tied output heads under anonymous dense-weight placement.
 - Image, audio, and sampled-video prompts with an `--mmproj` projector for supported models.
 - Persistent server sessions, custom Jinja chat templates, and configurable KV-cache types and layout.
 - Reasoning controls, reasoning budgets, and preserved reasoning/KV state where the selected model
@@ -124,6 +126,11 @@ The model architecture, available storage bandwidth, dense-weight policy, contex
 cache budget all affect results. Start with `--cache-mb auto`, collect telemetry with `--progress`,
 then tune from measured cache hit rate and I/O time.
 
+On Windows, add `--release-mmap` with `--dense-weights anon` (or `ahwb` on Android) to release the
+GGUF mapping after load and reopen the expert-read lanes. The core checks observed weight pointers
+and declines the release when any still use the mapping. The option is off by default and is
+available in `meitte-cli`, `meitte-server`, the C++ configuration, and the append-only C ABI.
+
 ## Build And Test
 
 ```bash
@@ -144,6 +151,8 @@ experts. Run them after changing the streamer, the llama.cpp seam, or model reci
 - [Telemetry](docs/telemetry.md): progress output, CSV fields, and diagnostic traces.
 - [Adding a model](docs/adding-a-model.md): architecture recipes and validation expectations.
 - [Limitations](docs/limitations.md): workload and platform constraints.
+- [BigMoeOnEdge sync ledger](docs/bigmoe-sync.md): the upstream delta ported into Meitte and the
+  Meitte adapters that expose it.
 
 ## Credits
 

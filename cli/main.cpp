@@ -421,6 +421,8 @@ static void print_usage(const char * argv0) {
         "                          name list, so a model that also multiplies by its embedding\n"
         "                          table is left alone, on any architecture\n"
         "      --row-stream-mb N   resident window for those tables in MiB (default 64)\n"
+        "      --release-mmap      release the model-file mapping after a safe streamed load\n"
+        "                          (removes Windows read serialization; opt-in, needs anon|ahwb)\n"
         "      --load-all          debug: read ALL experts each token (A/B baseline)\n"
         "      --force-cache       allow a cache-mb in the pathological band\n"
         "      --overlap           overlap async expert reads with FFN compute (needs the fork)\n"
@@ -778,6 +780,8 @@ int main(int argc, char ** argv) {
             cfg.moe.io_threads = std::atoi(next("--io-threads"));
         else if (a == "--no-odirect")
             cfg.moe.o_direct = false;
+        else if (a == "--release-mmap")
+            cfg.moe.release_mmap = true;
         else if (a == "--row-stream")
             cfg.moe.row_stream = true;
         else if (a == "--row-stream-mb")

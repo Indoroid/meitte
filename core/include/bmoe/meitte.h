@@ -54,6 +54,8 @@ typedef struct meitte_config {
     int32_t video_max_frames;
     const char * ffmpeg_bin_dir;
     uint64_t media_max_bytes;
+    /* Nonzero releases the model-file mapping after safe expert-stream initialization. */
+    int32_t release_mmap;
 } meitte_config;
 
 typedef struct meitte_media {

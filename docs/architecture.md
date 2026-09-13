@@ -1,6 +1,6 @@
 # Architecture
 
-BigMoeOnEdge is a small ports-and-adapters engine that sits **on top of** llama.cpp's
+Meitte is a small ports-and-adapters engine that sits **on top of** llama.cpp's
 public API. Its guiding constraint: drive streaming through the public API so upstream
 updates cost a submodule pointer bump and nothing else. The serial streamer holds to this
 against stock upstream; the one exception is the optional `--overlap` feature, which carries
@@ -22,6 +22,7 @@ core/
   src/
     io/         platform_io — O_DIRECT reads + reserve/commit/evict VM, cross-platform
                 file_reader — pooled positioned reader, per-consumer O_DIRECT
+                mapping_release — safe model-file unmap and teardown placeholders
     moe/        gguf_offsets (tensor → (shard, offset), split ggufs included), arch_registry,
                 expert_stream_source (one reader per shard), router_hook
                 dense_weights — non-expert weight policy + the residency sensor

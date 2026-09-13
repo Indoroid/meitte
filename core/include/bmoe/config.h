@@ -172,6 +172,11 @@ struct MoeStreamConfig {
     bool row_stream = false;
     int row_stream_mb = 64; // resident window across all row-streamed tables, in MiB
 
+    // Release the model-file mapping after load when every observed weight has moved to an
+    // engine-owned buffer. This removes a Windows NTFS serialization point for concurrent
+    // unbuffered reads. It is opt-in because the safety check covers observed graph weights only.
+    bool release_mmap = false;
+
     // ── cache-aware expert dropping (lossy; opt-in) ──────────────────────────────────
     // Skip a routed expert when it is a cache MISS *and* the router weighted it below
     // drop_cold_frac × (1 / n_expert_used) — i.e. below that fraction of the uniform share a

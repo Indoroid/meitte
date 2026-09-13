@@ -168,6 +168,8 @@ void RouterHook::begin_capture() {
     for (auto & L : captured_)
         L = LayerExperts{};
     captured_weights_.clear();
+    captured_weight_objects_.clear();
+    captured_weight_seen_.clear();
     row_gathered_.clear();
     row_disqualified_.clear();
     row_computed_index_.clear();
@@ -1393,6 +1395,7 @@ bool RouterHook::on_eval(ggml_tensor * t, bool ask) {
                 // filtered out downstream by the gguf tensor set, so recording them here is harmless.
                 if (src->op != GGML_OP_NONE) continue;
                 captured_weights_[src->name] = src;
+                if (captured_weight_seen_.insert(src).second) captured_weight_objects_.push_back(src);
                 // …and HOW this node used it, which is what decides whether its residency can be
                 // reduced to the rows the graph asks for. Only the table position of an I32 row
                 // gather counts. Computed indices request a barrier after capture.

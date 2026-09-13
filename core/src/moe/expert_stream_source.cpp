@@ -293,6 +293,18 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     return true;
 }
 
+bool ExpertStreamSource::reopen_readers() {
+    std::lock_guard<std::mutex> lock(io_mtx_);
+    if (!jobs_.empty() || !spec_jobs_.empty()) {
+        std::fprintf(stderr, "bmoe: reopen_readers refused: reads are queued\n");
+        return false;
+    }
+    bool ok = true;
+    for (auto & reader : readers_)
+        ok = reader->reopen() && ok;
+    return dense_.reopen_readers() && ok;
+}
+
 // ── one aligned slice read on a lane ────────────────────────────────────────────────
 // The bytes come from the reader; this wraps it with the domain the reader must not know about — the
 // per-read I/O trace that attributes a read to its (layer, expert, projection). Latency is timed here

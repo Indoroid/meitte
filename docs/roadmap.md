@@ -55,9 +55,10 @@ What follows from that:
   base by `file_off % align` so the destination inherits the file's misalignment) does not remove
   the spill, only its size. Not built: the win is a memcpy, the risk is the memory accounting the
   whole engine's budget rests on, and it cannot be judged without a device.
-- The remaining gap between the engine's effective rate and the drive's is **duty cycle, not
-  bandwidth**, and is not yet honestly sized: the ceiling itself falls by a third once the device
-  is hot, so engine and microbench must be measured interleaved at matched entry state. Owed.
+- On Windows, the model file's live mapping was the measured gap between effective and raw drive
+  rate. NTFS serialized the concurrent unbuffered lanes. `--release-mmap` removes the mapping,
+  reopens those lanes, and improved the measured host decode rate by 46%. Android did not reproduce
+  the serialization, so its remaining gap still needs matched-state measurement.
 
 ## Warm-up
 

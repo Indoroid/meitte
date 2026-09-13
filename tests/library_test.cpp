@@ -13,8 +13,9 @@ int main() {
         if (!ok) ++failures;
     };
     auto cfg = meitte_default_config();
-    check(cfg.context_grow == 0 && cfg.kv_unified == 0 && cfg.video_fps == 1.0f && cfg.video_max_frames == 32,
-          "C defaults keep recovery and unified KV off and bound video sampling");
+    check(cfg.context_grow == 0 && cfg.kv_unified == 0 && cfg.video_fps == 1.0f && cfg.video_max_frames == 32 &&
+              cfg.release_mmap == 0,
+          "C defaults keep recovery, unified KV, and mapping release off and bound video sampling");
     check(meitte_abi_version() == MEITTE_ABI_VERSION && meitte_version()[0], "C API reports its ABI and build version");
     meitte::RunConfig run_cfg;
     run_cfg.kv_unified = true;

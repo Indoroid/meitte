@@ -12,6 +12,7 @@ for the idea the project is built on.
 | [seam.md](seam.md) | The exact contract with llama.cpp's public API, and how to upgrade the submodule. |
 | [limitations.md](limitations.md) | What this does not do, what it cannot do, and the prior art it builds on. |
 | [roadmap.md](roadmap.md) | Themes worth exploring next. |
+| [bigmoe-sync.md](bigmoe-sync.md) | Which post-sync BigMoeOnEdge changes were ported and how Meitte exposes them. |
 
 ## Using and extending it
 

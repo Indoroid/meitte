@@ -77,6 +77,7 @@ meitte_session * meitte_open(const meitte_config * cfg, char * error, size_t cap
         MEITTE_COPY_FIELD(meitte_config, input, cfg, video_max_frames);
         MEITTE_COPY_FIELD(meitte_config, input, cfg, ffmpeg_bin_dir);
         MEITTE_COPY_FIELD(meitte_config, input, cfg, media_max_bytes);
+        MEITTE_COPY_FIELD(meitte_config, input, cfg, release_mmap);
         if (!input.model_path || !input.model_path[0]) throw std::invalid_argument("model path is required");
         if (input.speculation < 0 || input.speculation > 2) throw std::invalid_argument("invalid speculation source");
         auto context_mode = [](int32_t value) {
@@ -91,6 +92,7 @@ meitte_session * meitte_open(const meitte_config * cfg, char * error, size_t cap
         rc.kv_unified = input.kv_unified != 0;
         rc.moe.enabled = input.streaming != 0;
         rc.moe.cache_mb = input.cache_mb;
+        rc.moe.release_mmap = input.release_mmap != 0;
         rc.context.grow = context_mode(input.context_grow);
         rc.context.summarize = context_mode(input.context_summarize);
         rc.context.trim = context_mode(input.context_trim);

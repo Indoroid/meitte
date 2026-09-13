@@ -1531,6 +1531,7 @@ static void print_usage(const char * argv0) {
                 "      --no-odirect       use the OS page cache instead of direct expert reads\n"
                 "      --row-stream       serve graph-row-gathered dense tables from flash\n"
                 "      --row-stream-mb N  row-stream resident window in MiB (default 64)\n"
+                "      --release-mmap     release the model-file mapping after a safe streamed load\n"
                 "      --dense-weights M  mmap|warm|anon|ahwb placement for non-expert weights\n"
                 "      [DEPRECATED] --dense-odirect maps to anon; --no-warm-dense maps to mmap\n"
                 "      --load-all         debug baseline: load every expert each token\n"
@@ -1826,6 +1827,8 @@ int main(int argc, char ** argv) {
             cfg.moe.io_threads = std::atoi(next("--io-threads"));
         else if (a == "--no-odirect")
             cfg.moe.o_direct = false;
+        else if (a == "--release-mmap")
+            cfg.moe.release_mmap = true;
         else if (a == "--row-stream")
             cfg.moe.row_stream = true;
         else if (a == "--row-stream-mb")

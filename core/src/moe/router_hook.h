@@ -73,6 +73,10 @@ public:
     // against the gguf tensor set, which those do not belong to. Only .tensor is meaningful here.
     const std::unordered_map<std::string, ggml_tensor *> & captured_weights() const { return captured_weights_; }
 
+    // Every distinct captured leaf object. A name map cannot represent tied tensors that share a
+    // name and file range, but each object must be rebound before its mapping can be released.
+    const std::vector<ggml_tensor *> & captured_weight_objects() const { return captured_weight_objects_; }
+
     // After capture, the subset of those weights the graph only ever GATHERS ROWS from — the shape a
     // token embedding table has, and the one residency policy can exploit (see IRowSource). A name is
     // in this set only if EVERY node that referenced the tensor was a row gather taking it as the
@@ -290,6 +294,8 @@ private:
     std::atomic<bool> fatal_{false};
     std::vector<LayerExperts> captured_;
     std::unordered_map<std::string, ggml_tensor *> captured_weights_;
+    std::vector<ggml_tensor *> captured_weight_objects_;
+    std::unordered_set<const ggml_tensor *> captured_weight_seen_;
     // Capture-time evidence for row_gathered_weights(): every weight seen as the TABLE of a row
     // gather, and every weight seen in any way that rules that out. The verdict is the difference.
     std::unordered_set<std::string> row_gathered_;

@@ -264,6 +264,13 @@ void RowStream::release() {
     table_bytes_ = 0;
 }
 
+bool RowStream::reopen_readers() {
+    bool ok = true;
+    for (auto & reader : readers_)
+        ok = reader->reopen() && ok;
+    return ok;
+}
+
 void RowStream::shutdown() {
     release();
 }

@@ -63,6 +63,33 @@ calling thread participates as lane 0. On UFS 4.x, 4 lanes roughly triples effec
 bandwidth over serial. Compute threads (`-t`) show a U-shape — 4 is the measured optimum;
 8 regresses badly because ggml's spin-wait contends with the synchronous reads.
 
+## Model mapping release (`--release-mmap`)
+
+llama.cpp keeps each GGUF mapped for the model lifetime. On Windows, a live file section serializes
+concurrent unbuffered reads on the same file: four lanes can deliver one lane's throughput. A lane
+opened while the section exists keeps that behavior after the section closes, so the fix needs two
+steps: release the mapping and reopen every expert and row-stream reader.
+
+Meitte implements both steps in the core. After capture and dense-weight placement, it asks the OS
+whether any observed weight pointer still belongs to a model-file mapping. It releases only when the
+answer is zero. MTP also blocks release when any GGUF tensor is outside the captured policy set.
+`mmap`, `warm`, and oversized hold-back cases therefore decline safely. The flag remains opt-in
+because capture cannot prove facts about a graph shape that the session never built.
+
+The mapping is released without patching llama.cpp. Inert address and handle placeholders remain
+until the model is destroyed, which makes llama.cpp's later cleanup harmless. On Windows, llama.cpp
+can print `warning: UnmapViewOfFile failed` during shutdown because it finds the placeholder instead
+of its original mapping; this warning is expected.
+
+The upstream measurements for Qwen3.6-35B-A3B Q4_K_M report 3.16 to 4.63 tok/s on Windows (+46%)
+with identical reads, cache behavior, and generated text. Android did not show the Windows read
+serialization, but short trials showed lower CPU cost. See the
+[measurement record](bench-data/2026-08-29-mmap-serialisation/findings.md).
+
+The same work fixes tied output heads independently of the flag. Capture now records tensor objects,
+not only names, and anonymous or pinned placement rebinds every object over the same GGUF range.
+Thus a synthesized output head cannot silently keep reading the original mapping.
+
 ## Why repack must stay off
 
 The streamer rebinds `tensor->data` to a buffer it fills from the file's native byte

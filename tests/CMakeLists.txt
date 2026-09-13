@@ -28,6 +28,11 @@ add_executable(bmoe_config_test config_test.cpp)
 target_link_libraries(bmoe_config_test PRIVATE bmoe_core)
 add_test(NAME config_validate COMMAND bmoe_config_test)
 
+add_executable(bmoe_mapping_release_test mapping_release_test.cpp)
+target_link_libraries(bmoe_mapping_release_test PRIVATE bmoe_core)
+target_include_directories(bmoe_mapping_release_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
+add_test(NAME mapping_release COMMAND bmoe_mapping_release_test)
+
 add_executable(bmoe_library_test library_test.cpp)
 target_link_libraries(bmoe_library_test PRIVATE bmoe_core)
 find_program(BMOE_TEST_FFMPEG_EXECUTABLE ffmpeg)

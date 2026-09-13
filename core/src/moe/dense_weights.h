@@ -40,6 +40,9 @@ struct DenseTensorRef {
     uint64_t file_off = 0;
     uint64_t size = 0;
     int file_idx = 0; // which shard file holds the bytes (0 for a single-file model)
+    // Other tensor objects over the same file range. A tied output head can share the token
+    // embedding bytes and must be rebound with the primary tensor.
+    std::vector<ggml_tensor *> aliases;
 };
 
 class DenseWeights {
@@ -81,6 +84,8 @@ public:
     // The row policy, once init has run: null when no table qualified or the takeover failed. The
     // engine's graph adapter needs it to make rows present before a gather node runs.
     IRowSource * row_source() const;
+    bool file_mapping_in_use() const;
+    bool reopen_readers();
     RowSourceStats row_stats() const;
 
     // Sample how much of the dense set the kernel still has in RAM (mincore), setting resident_frac().

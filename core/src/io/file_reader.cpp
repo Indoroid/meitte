@@ -15,6 +15,11 @@ FileReader::~FileReader() {
 
 bool FileReader::open(const std::string & path, int lanes, bool direct, size_t align, size_t bounce_cap) {
     if (is_open()) return false;
+    // A refused open must not overwrite the settings that reopen() replays.
+    path_ = path;
+    lanes_ = lanes;
+    direct_req_ = direct;
+    bounce_cap_ = bounce_cap;
     align_ = align ? align : 4096;
     direct_ = direct;
     const int n = lanes < 1 ? 1 : lanes;
@@ -182,6 +187,17 @@ long long FileReader::read(int lane, void * dst, uint64_t off, uint64_t nbytes) 
     const long long window = (long long) (read_end - a0);
     read_bytes_.fetch_add(window);
     return window; // the aligned window pulled — what the effective bandwidth is judged against
+}
+
+bool FileReader::reopen() {
+    if (!is_open()) return false;
+    const std::string path = path_;
+    const int lanes = lanes_;
+    const bool direct = direct_req_;
+    const size_t align = align_;
+    const size_t cap = bounce_cap_;
+    close();
+    return open(path, lanes, direct, align, cap);
 }
 
 void FileReader::close() {
