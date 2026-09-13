@@ -168,7 +168,8 @@ is, so the drafting policy stays on the pure-policy side of the seam and is unit
 and no native backend (`tests/ngram_test.cpp`). See [ngram.md](ngram.md).
 
 `--mtp` reaches `common/speculative.h`, which is a header of the same `common` library and
-includes only `llama.h` and `common.h`. The draft/verify orchestration — running the trained MTP
+includes only `llama.h` and `common.h`. The engine sets the draft start position through
+`common_speculative_draft_params::pos0` in the pinned API. The draft/verify orchestration — running the trained MTP
 head, moving hidden states from the target to it, seeding the next draft from the accepted position
 — is entirely upstream's; the engine supplies the loop around it and the two contexts it works on.
 Worth stating explicitly because the internals it needs (`llama_set_embeddings_nextn` and the
