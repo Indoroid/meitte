@@ -45,9 +45,10 @@ struct ExpertTensorRef {
     int file_idx = 0;               // which shard file holds the bytes (0 for a single-file model)
 };
 
-// The expert weight tensors of one MoE layer, one per recipe suffix slot. The split
-// layout fills all three ({gate, up, down}); a fused-gate_up layout fills two and leaves
-// the tail slot empty (tensor == nullptr). Unbound layers (dense, or non-MoE) stay false.
+// The expert weight tensors of one MoE layer, one per recipe suffix slot. Split layouts
+// fill all three ({gate, up, down}); fused-gate_up and routed up/down-only layouts fill
+// two and leave the tail slot empty (tensor == nullptr). Unbound layers (dense, or
+// non-MoE) stay false.
 struct LayerExperts {
     bool bound = false;
     ExpertTensorRef proj[MoeRecipe::max_exps];

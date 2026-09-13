@@ -12,13 +12,12 @@
 namespace meitte {
 
 // The expert weight tensors of a MoE layer, named `blk.<il>.<suffix>.weight` in the gguf.
-// A recipe lists the per-layer expert tensors as a suffix table: the common split layout
-// names three ({gate, up, down} projections), while architectures that fuse gate+up into
-// one tensor name two ({gate_up, down}). Unused slots are nullptr. Each named tensor is
-// 3-D and its dim-2 indexes the expert (ne[2] == n_expert); the engine streams whatever
-// the recipe names and never needs to know which projection a given tensor carries — a
-// fused gate_up is just an expert tensor with a larger per-expert stride, discovered at
-// runtime like any other.
+// A recipe lists the per-layer expert tensors as a suffix table. The common split layout names
+// three ({gate, up, down} projections); layouts that fuse gate+up or omit a routed gate tensor
+// name two ({gate_up, down} or {up, down}). Unused slots are nullptr. Each named tensor is 3-D
+// and its dim-2 indexes the expert (ne[2] == n_expert). The engine streams whatever the recipe
+// names and never needs to know which projection a given tensor carries — a fused gate_up is
+// just an expert tensor with a larger per-expert stride, discovered at runtime like any other.
 struct MoeRecipe {
     static constexpr int max_exps = 3;
     const char * arch;                  // gguf general.architecture, e.g. "qwen3moe"

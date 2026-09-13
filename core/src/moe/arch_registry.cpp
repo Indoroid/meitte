@@ -9,7 +9,8 @@ namespace meitte {
 // `ffn_{gate,up,down}_exps` naming, so adding one is usually a single row here — see
 // docs/adding-a-model.md. Models that fuse gate+up into one tensor (a merged
 // `ffn_gate_up_exps`) name two expert tensors instead of three; that is still one row,
-// with the fused suffix in the first slot and a nullptr tail.
+// with the fused suffix in the first slot and a nullptr tail. Some architectures omit a
+// routed gate expert tensor; their up/down suffixes use the first two slots instead.
 static const MoeRecipe k_recipes[] = {
     {"qwen3moe", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
     {"qwen2moe", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
@@ -25,6 +26,9 @@ static const MoeRecipe k_recipes[] = {
     // resident; the resident shared expert lowers the streamed fraction — see
     // docs/limitations.md.
     {"gemma4", {"ffn_gate_up_exps", "ffn_down_exps", nullptr}},
+    {"glm-dsa", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
+    {"glm5next", {"ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"}},
+    {"nemotron_h_moe", {"ffn_up_exps", "ffn_down_exps", nullptr}},
     // gpt-oss (OpenAI MoE, e.g. gpt-oss-20b/120b: 24/36 layers, 128 experts, top-4) is a purely
     // routed MoE with the standard split suffixes, so streaming is one row — and, unlike gemma4,
     // it keeps NO shared/dense expert resident, so the streamed fraction is as high as qwen3moe's.

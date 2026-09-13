@@ -34,8 +34,9 @@ We use both phases:
 
 **Capture phase** (one warm-up decode). `ask` is called for every node, so we scan each
 node's `src[]` for expert weight tensors (`blk.<il>.<suffix>.weight`, where the suffixes
-come from the arch's recipe — `ffn_{gate,up,down}_exps` for the split layout, a fused
-`ffn_gate_up_exps` for others) and record the live `ggml_tensor*`. We return false
+come from the arch's recipe — `ffn_{gate,up,down}_exps` for the split layout,
+`ffn_gate_up_exps` for fused experts, or `ffn_{up,down}_exps` for routed up/down-only
+experts) and record the live `ggml_tensor*`. We return false
 throughout — capture observes, it does not isolate. `ggml_tensor` is a public struct, so
 reading `->name`, `->ne`, `->nb` and writing `->data` is public API surface.
 

@@ -64,6 +64,9 @@ The following GGUF `general.architecture` values are supported for expert stream
 | `qwen3moe` | Qwen3 MoE |
 | `qwen2moe` | Qwen2 MoE |
 | `qwen35moe` | Qwen3.5 MoE |
+| `glm-dsa` | GLM-5.2 and GLM-5.3 |
+| `glm5next` | GLM-5.3 Flash |
+| `nemotron_h_moe` | Nemotron 3, 3.5, and Nemotron-H MoE |
 | `gemma4` | Gemma 4 MoE |
 | `gpt-oss` | OpenAI gpt-oss |
 | `lfm2moe` | Liquid AI LFM2 and LFM2.5 MoE |

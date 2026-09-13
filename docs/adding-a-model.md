@@ -46,6 +46,23 @@ with a larger per-expert stride, discovered at runtime like any other.
     { "gemma4", { "ffn_gate_up_exps", "ffn_down_exps", nullptr } },
 ```
 
+Some models expose only routed up and down expert tensors. Register those two
+names and leave the unused slot last:
+
+```cpp
+    { "nemotron_h_moe", { "ffn_up_exps", "ffn_down_exps", nullptr } },
+```
+
+The slot order is an internal binding order. The streamer does not assign
+semantic meaning to a slot after it binds the tensor name.
+
+Use the `general.architecture` value from the converted GGUF. GLM-5.2 and
+GLM-5.3 use `glm-dsa`, GLM-5.3 Flash uses `glm5next`, and Nemotron 3/3.5/H
+MoE uses `nemotron_h_moe`. NVIDIA's Hugging Face configs use
+`model_type: "nemotron_h"` for both dense and MoE variants; conversion selects
+the GGUF `nemotron_h_moe` architecture when routed experts are present. A
+dense `nemotron_h` GGUF has no routed expert tensors and does not need a recipe.
+
 Models with **shared/always-on experts** (a dense expert applied to every token, as in
 `gemma4`, DeepSeek and some Qwen variants) work, but the shared expert stays resident and
 reduces the streaming saving proportionally. Note it in the model's entry when you add one.

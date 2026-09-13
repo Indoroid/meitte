@@ -181,8 +181,8 @@ Self-speculation means one model and two contexts over it:
   not per-model.
 
 That callback is what makes the MTP block visible to the streamer. The head lives at layer index
-`n_layer` — contiguous with the trunk, same `ffn_{gate,up,down}_exps` tensor naming, same expert
-count — so with `--mtp` on, the hook and the expert source are sized `n_layer + n_layer_nextn`
+`n_layer` — contiguous with the trunk, same recipe-named expert tensors, same expert count —
+so with `--mtp` on, the hook and the expert source are sized `n_layer + n_layer_nextn`
 and the head's experts are streamed, cached and dropped like any other layer's. Two things follow
 from that and are easy to get wrong:
 

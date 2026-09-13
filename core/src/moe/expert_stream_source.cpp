@@ -59,7 +59,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     page_ = pio::vm_page(); // the real OS page size, for the dense-residency probe in any cache mode
 
     // Largest full-tensor byte size per projection, over all bound layers → shared-slot
-    // and bounce sizing. Absent projection slots (a fused layout uses fewer than max_exps
+    // and bounce sizing. Absent projection slots (a two-tensor layout uses fewer than max_exps
     // expert tensors) keep nb2 == 0, so their max_full stays 0 and they are skipped below.
     size_t max_full[MoeRecipe::max_exps] = {0, 0, 0};
     for (const LayerExperts & L : layers_) {
@@ -170,7 +170,7 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
             LayerExperts & L = layers_[il];
             if (!L.bound) continue;
             for (int p = 0; p < MoeRecipe::max_exps; ++p) {
-                if (!L.proj[p].tensor) continue; // absent slot in a fused layout
+                if (!L.proj[p].tensor) continue; // absent slot in a two-tensor layout
                 const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_;
                 lbuf_[p][il] = pio::vm_reserve(full);
                 if (!lbuf_[p][il]) {
@@ -764,7 +764,7 @@ void ExpertStreamSource::release_entry_pages(int32_t id) {
     const int il = id / n_expert_, e = id % n_expert_;
     for (int p = 0; p < MoeRecipe::max_exps; ++p) {
         const uint64_t slice = layers_[il].proj[p].nb2;
-        if (slice == 0) continue; // absent slot in a fused layout
+        if (slice == 0) continue; // absent slot in a two-tensor layout
         char * s = (char *) lbuf_[p][il] + (uint64_t) e * slice;
         uintptr_t a0 = ((uintptr_t) s + page_ - 1) & ~(uintptr_t) (page_ - 1);
         uintptr_t a1 = ((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1);
@@ -916,7 +916,7 @@ uint64_t ExpertStreamSource::expert_bytes(int il) const {
 bool ExpertStreamSource::commit_proj_pages(int il, int e, int p) {
     const LayerExperts & L = layers_[il];
     const uint64_t slice = L.proj[p].nb2;
-    if (slice == 0) return true; // absent slot in a fused layout
+    if (slice == 0) return true; // absent slot in a two-tensor layout
     char * dst = (char *) lbuf_[p][il] + (uint64_t) e * slice;
     uintptr_t a0 = (uintptr_t) dst & ~(uintptr_t) (page_ - 1);
     uintptr_t a1 = ((uintptr_t) dst + slice + page_ - 1) & ~(uintptr_t) (page_ - 1);
@@ -988,7 +988,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
         if (cache_max_ == 0) {
             for (int p = 0; p < MoeRecipe::max_exps; ++p) {
                 const uint64_t slice = L.proj[p].nb2;
-                if (slice == 0) continue; // absent slot in a fused layout
+                if (slice == 0) continue; // absent slot in a two-tensor layout
                 jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
                                  slice, -1, (int16_t) L.proj[p].file_idx, e, (int16_t) il, (int8_t) p, 0});
             }
@@ -1002,7 +1002,7 @@ bool ExpertStreamSource::load_layer(int il, const int32_t * ids, int n_ids) {
         // kernel that is already blocking.
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             const uint64_t slice = L.proj[p].nb2;
-            if (slice == 0) continue; // absent slot in a fused layout
+            if (slice == 0) continue; // absent slot in a two-tensor layout
             jobs_.push_back({(char *) lbuf_[p][il] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,
                              slice, -1, (int16_t) L.proj[p].file_idx, e, (int16_t) il, (int8_t) p, 0});
         }
@@ -1152,7 +1152,7 @@ bool ExpertStreamSource::load_layer_async(int il, const int32_t * ids, int n_ids
         // at its canonical offset e*slice. Emit projection-major.
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             const uint64_t slice = L.proj[p].nb2;
-            if (slice == 0) continue; // absent slot in a fused layout
+            if (slice == 0) continue; // absent slot in a two-tensor layout
             for (int e : staged_) {
                 const int32_t flag = (int32_t) ((size_t) p * (size_t) n_expert_ + (size_t) e);
                 jobs_.push_back({(char *) slot_[p] + (uint64_t) e * slice, L.proj[p].file_off + (uint64_t) e * slice,

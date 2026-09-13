@@ -59,8 +59,9 @@ already public in llama.cpp:
    tensor's contents (the weights, and the ids) rather than only rebinding `->data`. See
    [seam.md](seam.md).
 2. **The expert tensor pointers.** During a one-token warm-up we scan each graph node's
-   sources for tensors named `blk.<il>.ffn_{gate,up,down}_exps.weight` and record the
-   live `ggml_tensor*`. We then rebind their `->data`.
+   sources for recipe-named tensors such as `blk.<il>.ffn_{gate,up,down}_exps.weight`,
+   `blk.<il>.ffn_gate_up_exps.weight`, or `blk.<il>.ffn_{up,down}_exps.weight` and record
+   the live `ggml_tensor*`. We then rebind their `->data`.
 3. **The file layout.** `gguf_get_tensor_offset` (public) gives each tensor's byte offset
    so we can `pread` individual expert slices.
 

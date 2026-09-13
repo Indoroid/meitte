@@ -15,8 +15,9 @@ decoding or a canvas — the engine keeps decode single-token by construction.
 ## Mechanism
 
 1. **Bind.** After a one-token warm-up capture (see [seam.md](seam.md)), every layer's
-   three expert tensors (`ffn_{gate,up,down}_exps`) are rebound onto streaming buffers and
-   never read from the mmap again.
+   recipe-named expert tensors are rebound onto streaming buffers and never read from the
+   mmap again. Recipes can use split gate/up/down tensors, a fused gate/up tensor, or routed
+   up/down-only tensors.
 2. **Route.** The eval-callback marks only the routing node `ffn_moe_topk-<il>` as needed.
    ggml computes it alone, synchronizes, and calls back with the selected expert ids. They
    are gathered **respecting the view strides** — `selected_experts` is a view of the full
@@ -39,9 +40,9 @@ weighted). Both are off unless asked for, which is what keeps the sentence above
 
 ## Residency modes
 
-- **Cache off (shared slots).** Three heap buffers (full `n_expert` size) are shared
-  across layers — one layer computes at a time. Routed slices are re-read fresh every
-  token. Lowest RAM, highest I/O.
+- **Cache off (shared slots).** Heap buffers (full `n_expert` size) are shared across
+  layers — one buffer per present expert tensor, with one layer computing at a time. Routed
+  slices are re-read fresh every token. Lowest RAM, highest I/O.
 - **LRU cache (`--cache-mb N`).** Each `(layer, projection)` gets a reserved,
   lazily-committed address range. A routed expert already resident is a **hit** (no read);
   a miss is read once and kept; over budget, the coldest `(layer, expert)` is evicted and
@@ -99,7 +100,7 @@ The engine loads with `use_extra_bufts=false`; this is load-bearing, not a tunin
 
 ## Assumptions to re-check on a submodule bump
 
-- The routing node is named `ffn_moe_topk-<il>` and the expert tensors
-  `blk.<il>.ffn_{gate,up,down}_exps.weight`. The recipe isolates these names.
+- The routing node is named `ffn_moe_topk-<il>` and the recipe names every routed expert
+  tensor. The recipe isolates these names.
 - The eval-callback fires per decode (not skipped by graph reuse) and computes a
   marked node alone before the non-ask callback. The gates catch a regression here.

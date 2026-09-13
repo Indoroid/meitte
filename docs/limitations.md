@@ -52,8 +52,9 @@ serial path, and only a single ~25-line hook (with an explicit sunset) for the o
 - **CPU execution only.** Models, streamed experts, projectors, and draft contexts use CPU buffers.
   GPU offload and iOS targets are outside the current plan.
 - **Shared experts stay resident.** Architectures with an always-on shared expert (e.g.
-  `gemma4`, `deepseek4`) stream the routed experts but keep the shared expert — and any dense layers —
-  resident (in the page cache, or in the engine's own buffers under `--dense-weights anon`),
+  `gemma4`, `deepseek4`, `glm-dsa`, `glm5next`, and `nemotron_h_moe`) stream the routed experts but
+  keep the shared expert — and any dense layers — resident (in the page cache, or in the
+  engine's own buffers under `--dense-weights anon`),
   so the streamed fraction (and the memory saving) is smaller than for a purely routed model
   like `qwen3moe`. The same applies to architectures whose first blocks are dense by design
   (`lfm2moe` has a `leading_dense_block_count`): those blocks name no expert tensors, so they
