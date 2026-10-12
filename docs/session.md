@@ -33,6 +33,20 @@ warming the cache changes latency, never the bytes.
   owns the conversation (`chat_history`) and re-renders the model's chat template over the *whole*
   history each turn, so the caller sends only the new user message — not the running transcript.
 
+- **`true` with `reuse_kv_prefix` (stateless transcript):** the request carries the whole
+  conversation in `messages`, as an OpenAI or Anthropic client sends it. The engine-held history is
+  replaced, as for any new chat, but the KV is kept for the prefix diff below, so a request that
+  repeats the previous prompt prefills only what is new. A request that shares nothing prefills in
+  full; media in the request or in the KV clears as before. `RunSummary::n_prompt_reused` reports
+  what was kept.
+
+`GenerateRequest::stop` ends a generation at the first stop sequence in the generated text (raw,
+reasoning included) and cuts the text before it (`FinishReason::StopSequence`). While a sequence
+could still be forming, the tail that might belong to it is held back from the token callbacks, so
+a streaming client never sees part of one; `RunResult` carries the complete answer, so a frontend
+that streams sends what remains when the turn ends. The KV keeps the stop text's tokens; the next
+prefix diff removes them.
+
 `meitte-cli --session --kv-preserve` makes subsequent commands choose `clear_kv=false` by default;
 an individual JSON command can still send `"clear_kv":true` to reset. `meitte-server --kv-preserve`
 does the same for one incremental server-wide conversation. It is intentionally not a multi-client

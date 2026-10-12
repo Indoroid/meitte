@@ -116,17 +116,19 @@ bool Session::Impl::truncate_kv(llama_pos keep_pos, size_t keep_tokens, bool in_
     return false;
 }
 
-void Session::Impl::reset_conversation() {
-    clear_memory(ctx.get());
-    // The draft context tracks the target's positions and must be dropped with it, or the first
-    // draft of the new conversation is conditioned on the previous one.
-    if (ctx_dft) llama_memory_clear(llama_get_memory(ctx_dft.get()), true);
+void Session::Impl::reset_conversation(bool keep_kv) {
     chat_history.clear();
-    kv_tokens.clear();
-    kv_has_media = false;
-    retained_media.clear();
-    kv_n_past = 0;
     kv_last_generation_start = 0;
+    if (!keep_kv) {
+        clear_memory(ctx.get());
+        // The draft context tracks the target's positions and must be dropped with it, or the first
+        // draft of the new conversation is conditioned on the previous one.
+        if (ctx_dft) llama_memory_clear(llama_get_memory(ctx_dft.get()), true);
+        kv_tokens.clear();
+        kv_has_media = false;
+        retained_media.clear();
+        kv_n_past = 0;
+    }
     // A new chat resets the sampler RNG, so a fixed seed reproduces the same transcript from a
     // fresh conversation.
     if (smpl) llama_sampler_reset(smpl);

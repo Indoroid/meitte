@@ -10,6 +10,8 @@ const char * finish_reason_name(FinishReason reason) {
     switch (reason) {
     case FinishReason::Stop:
         return "stop";
+    case FinishReason::StopSequence:
+        return "stop_sequence";
     case FinishReason::Length:
         return "length";
     case FinishReason::Cancelled:

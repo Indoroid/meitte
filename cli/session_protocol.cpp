@@ -164,6 +164,30 @@ bool parse_session_generate(const json & root, const RunConfig & cfg, SessionCom
         }
         out.clear_kv = root["clear_kv"].get<bool>();
     }
+    if (root.contains("reuse_kv_prefix")) {
+        if (!root["reuse_kv_prefix"].is_boolean()) {
+            error = "reuse_kv_prefix must be a boolean";
+            return false;
+        }
+        out.reuse_kv_prefix = root["reuse_kv_prefix"].get<bool>();
+    }
+    if (root.contains("stop")) {
+        const json & stop = root["stop"];
+        if (stop.is_string()) {
+            out.stop.push_back(stop.get<std::string>());
+        } else if (stop.is_array()) {
+            for (const json & item : stop) {
+                if (!item.is_string()) {
+                    error = "stop must be a string or an array of strings";
+                    return false;
+                }
+                out.stop.push_back(item.get<std::string>());
+            }
+        } else {
+            error = "stop must be a string or an array of strings";
+            return false;
+        }
+    }
     return true;
 }
 

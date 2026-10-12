@@ -69,7 +69,12 @@ RunResult Session::generate(const GenerateRequest & req,
     // continues the conversation, reusing the KV prefix already decoded from earlier turns.
     // A continued turn (clear_kv=false) keeps the sampler stream going, matching the KV it decodes
     // against; a new chat resets it (see reset_conversation).
-    if (req.clear_kv) im.reset_conversation();
+    // reuse_kv_prefix keeps the KV of a new chat for the prefix diff below: the request carries the
+    // whole transcript, so whatever of the KV it starts with is still valid. Media in the request or
+    // in the KV has no text-only diff, so it clears as before.
+    const bool keep_kv_prefix = req.clear_kv && req.reuse_kv_prefix && im.chat_on && req.chatml &&
+                                !req.messages.empty() && !has_media && !im.kv_has_media;
+    if (req.clear_kv) im.reset_conversation(/*keep_kv*/ keep_kv_prefix);
 
     // Sampling is fixed at open(), but an HTTP API needs request-scoped temperature and nucleus
     // settings. An override builds a sampler that lives for this request only: the session's own
@@ -557,6 +562,13 @@ RunResult Session::generate(const GenerateRequest & req,
     // ── greedy generation ──
     res.ok = true;
     std::string gen;
+    // Stop sequences (GenerateRequest::stop). `shown_end` is how much of `gen` has been handed to the
+    // token callbacks; the bytes after it might still turn out to start a stop sequence.
+    size_t stop_max = 0;
+    for (const std::string & stop : req.stop)
+        stop_max = std::max(stop_max, stop.size());
+    size_t shown_end = 0;
+    bool stop_hit = false;
     std::vector<llama_token> emitted_tokens;
     int n_gen = 0; // every generated token
     // Tokens charged to the n_predict allowance. Without a reasoning budget that is every token; with
@@ -881,6 +893,37 @@ RunResult Session::generate(const GenerateRequest & req,
             emitted_tokens.push_back(out);
             std::string delta = token_piece(im.vocab, out);
             gen += delta;
+            if (stop_max) {
+                // Search only where a stop sequence could newly end: the new bytes and the longest
+                // sequence before them.
+                const size_t from = gen.size() > delta.size() + stop_max ? gen.size() - delta.size() - stop_max : 0;
+                size_t cut = std::string::npos;
+                for (const std::string & stop : req.stop) {
+                    if (stop.empty()) continue;
+                    const size_t at = gen.find(stop, from);
+                    if (at != std::string::npos && at < cut) {
+                        cut = at;
+                        res.stop_sequence = stop;
+                    }
+                }
+                size_t safe_end = gen.size();
+                if (cut != std::string::npos) {
+                    gen.resize(cut);
+                    safe_end = cut;
+                    stop_hit = true;
+                } else {
+                    // Hold back the longest tail that is a prefix of some stop sequence.
+                    for (const std::string & stop : req.stop)
+                        for (size_t n = std::min(stop.size() - (stop.empty() ? 0 : 1), gen.size()); n > 0; --n)
+                            if (gen.compare(gen.size() - n, n, stop, 0, n) == 0) {
+                                safe_end = std::min(safe_end, gen.size() - n);
+                                break;
+                            }
+                }
+                safe_end = std::max(safe_end, shown_end);
+                delta = gen.substr(shown_end, safe_end - shown_end);
+                shown_end = safe_end;
+            }
             const bool reasoning_token = budget_on && reasoning.accept(out);
             if (reasoning_token && n_reasoning < reasoning.allowance())
                 ++n_reasoning;
@@ -904,7 +947,7 @@ RunResult Session::generate(const GenerateRequest & req,
             // Only when someone will read it: the parser cannot resume, so this re-parses everything
             // generated so far on every token, and off the chat path it is a full copy of the same.
             if (req.render_text) {
-                ShownView sv = shown_view(gen, /*partial*/ true);
+                ShownView sv = shown_view(stop_max ? gen.substr(0, shown_end) : gen, /*partial*/ true);
                 m.text = std::move(sv.content);
                 m.reasoning = std::move(sv.reasoning);
             }
@@ -914,6 +957,13 @@ RunResult Session::generate(const GenerateRequest & req,
                 tally.record(m, 0.0, 0, 0.0, im.turn, moe.enabled ? &st : nullptr);
             if (on_token) on_token(m);
             if (sink) sink->on_token(m);
+            if (stop_hit) break;
+        }
+        if (stop_hit) {
+            // The group is decoded, so the KV holds it: account for it as the code below does for a
+            // group that runs on. A speculative group cut short is trimmed after the loop.
+            n_past += 1 + n_acc;
+            break;
         }
 
         if (eog_hit) {
@@ -947,6 +997,7 @@ RunResult Session::generate(const GenerateRequest & req,
 
     res.finish = res.context_exhausted ? FinishReason::ContextFull
                  : res.cancelled       ? FinishReason::Cancelled
+                 : stop_hit            ? FinishReason::StopSequence
                  : eog                 ? FinishReason::Stop
                                        : FinishReason::Length;
 
@@ -962,6 +1013,7 @@ RunResult Session::generate(const GenerateRequest & req,
     loop_overhead_s += secs(loop_mark, Clock::now());
     s.loop_overhead_s_per_token = n_gen ? loop_overhead_s / n_gen : 0.0;
     s.n_prompt = media_prefill ? n_prompt : n_prompt - (int) n_common;
+    s.n_prompt_reused = media_prefill ? 0 : (int) n_common;
     s.n_past = chat_on && im.kv_has_media ? (int) kv_end
                : has_media                ? (int) (prompt_n_past + n_gen)
                : chat_on                  ? (int) im.kv_tokens.size()

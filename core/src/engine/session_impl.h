@@ -231,8 +231,9 @@ struct Session::Impl {
     // (the trim after a speculative verify batch). Only such a removal may use recurrent-state
     // snapshots; see the definition.
     bool truncate_kv(llama_pos keep_pos, size_t keep_tokens, bool in_last_decode);
-    // Drop the KV, the conversation and the retained media: the state of a new chat.
-    void reset_conversation();
+    // Drop the KV, the conversation and the retained media: the state of a new chat. `keep_kv` keeps
+    // the KV and its token record for the next prompt's prefix diff (GenerateRequest::reuse_kv_prefix).
+    void reset_conversation(bool keep_kv = false);
 
     // Session::open() phases, in call order (session_open.cpp). Each returns false and sets `error`
     // on failure; the caller then destroys the Impl, which tears down whatever the phase built.

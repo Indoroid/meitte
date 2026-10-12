@@ -181,6 +181,20 @@ struct GenerateRequest {
     // llama.cpp parses each value before exposing it to the Jinja context.
     std::map<std::string, std::string> chat_template_kwargs;
     bool clear_kv = true;
+    // With clear_kv and a complete transcript in `messages`: keep the KV positions the new prompt
+    // starts with, and prefill only the rest. A stateless API client (OpenAI, Anthropic) sends the
+    // whole conversation with every request; its next request repeats the last one's prompt, so most
+    // of the prefill is already in the KV. The conversation is still the request's own: the engine-
+    // held history is replaced as with any clear_kv request, and a prompt that shares nothing with
+    // the KV prefills in full. Ignored without chat mode, without `messages`, or when media is in
+    // the request or in the KV. RunSummary::n_prompt_reused reports what was kept.
+    bool reuse_kv_prefix = false;
+    // Stop sequences: generation ends at the first one that appears in the generated text, and the
+    // text is cut before it (FinishReason::StopSequence, RunResult::stop_sequence). Matched against
+    // the raw generated text, reasoning included. While one could still be forming, the tail that
+    // might belong to it is held back from TokenMetrics::piece and ::text, so a streaming client
+    // never sees part of a stop sequence; RunResult carries the complete answer.
+    std::vector<std::string> stop;
     // HTTP callers can override sampling per request without reopening the model. The override lives
     // for this request only: the SessionConfig sampler is neither used nor advanced, and the next
     // request without an override samples exactly as if this one had not happened. Ordinary callers

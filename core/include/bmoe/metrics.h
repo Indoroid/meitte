@@ -118,6 +118,9 @@ struct RunSummary {
     // In a multi-turn chat n_prompt is the tokens actually prefilled THIS turn (the suffix
     // after the reused KV prefix), and n_past is the total context length after the turn.
     int n_prompt = 0;
+    // Prompt tokens that were already in the KV and were not prefilled again this turn (a continued
+    // conversation, or GenerateRequest::reuse_kv_prefix).
+    int n_prompt_reused = 0;
     int n_past = 0;
     double load_seconds = 0.0;
     double prefill_seconds = 0.0;

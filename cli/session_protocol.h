@@ -23,6 +23,9 @@ struct SessionCommand {
     // Unspecified follows the session's default. This lets --kv-preserve continue after the
     // first turn while retaining an explicit {"clear_kv":true} reset escape hatch.
     std::optional<bool> clear_kv;
+    // GenerateRequest::reuse_kv_prefix and ::stop.
+    bool reuse_kv_prefix = false;
+    std::vector<std::string> stop;
     // decide only (bmoe/decide.h)
     std::string prefix;
     std::string suffix;

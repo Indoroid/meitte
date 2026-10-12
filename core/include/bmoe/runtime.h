@@ -32,12 +32,13 @@ struct ToolCall {
 // Why a generation ended. Decided by the engine, which is the only place that knows: a frontend
 // that compares token counts cannot tell a reasoning allowance, a cancel or a full context apart.
 enum class FinishReason {
-    None,        // no generation ran
-    Stop,        // the model emitted end-of-generation
-    Length,      // the n_predict answer allowance ran out
-    Cancelled,   // Session::cancel() interrupted it
-    ContextFull, // the context reached capacity (context_exhausted is set too)
-    Error,       // it failed; see error, rejected and fatal
+    None,         // no generation ran
+    Stop,         // the model emitted end-of-generation
+    StopSequence, // the text reached one of GenerateRequest::stop
+    Length,       // the n_predict answer allowance ran out
+    Cancelled,    // Session::cancel() interrupted it
+    ContextFull,  // the context reached capacity (context_exhausted is set too)
+    Error,        // it failed; see error, rejected and fatal
 };
 
 // Stable lowercase name ("stop", "length", "cancelled", "context_full", "error", "none").
@@ -62,6 +63,7 @@ struct RunResult {
     // in generated_text already has it stripped. See TokenMetrics::reasoning.
     std::string reasoning_text;
     std::vector<ToolCall> tool_calls;
+    std::string stop_sequence; // the GenerateRequest::stop entry that ended it, with StopSequence
     RunSummary summary;
     explicit operator bool() const { return ok; }
 };

@@ -513,6 +513,8 @@ Requests (stdin):
 ```
 {"cmd":"generate","id":<int>,"prompt":"<string>","n_predict":<int>,"think":<bool>,"clear_kv":<bool>}
 {"cmd":"generate","id":<int>,"messages":[{"role":"system","content":"..."},{"role":"user","content":"..."}],"reasoning_effort":"high","chat_template_kwargs":{"foo":true}}
+{"cmd":"generate","id":<int>,"messages":[...],"reuse_kv_prefix":true,"stop":["<string>",...]}
+                          # a full transcript that keeps the matching KV prefix; stop sequences
 {"cmd":"decide","id":<int>,"prefix":"<string>","suffix":"<string>","choices":["<string>",...],
  "reuse_prefix":<bool>}   # needs --decide; always rendered with reasoning off; see decide.md
 {"cmd":"cancel"}          # interrupt the in-flight generation; the session stays loaded
@@ -536,7 +538,7 @@ BMOE_BEGIN {"id":<int>}                                                # a gener
 BMOE_LOAD / BMOE_PROGRESS ...                                          # per token, as above
 BMOE_DONE  {"id":<int>,"cancelled":<bool>,"finish":"<reason>","tokens":<int>,"tok_s":<float>,
             "prefill_s":<float>,"prefill_tps":<float>,"load_s":<float>,"cache_hit_pct":<float>,
-            "n_prompt":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
+            "n_prompt":<int>,"n_prompt_reused":<int>,"n_past":<int>,"compute_s_tok":<float>,"io_s_tok":<float>,
             "cache_resident_mib":<float>,"cache_budget_mib":<float>,"read_mib":<float>,
             "stall_s_tok":<float>,"mgmt_s_tok":<float>,"majflt_tok":<float>,"cpu_s_tok":<float>,
             "prefill_cpu_s":<float>,"prefill_read_mib":<float>,"prefill_io_s":<float>,
@@ -631,7 +633,9 @@ AVERAGES over the run (so a UI can show an average compute-vs-I/O split, not jus
 `cache_resident_mib`/`cache_budget_mib` track the MoE cache. `read_mib` and
 `stall_s_tok`/`mgmt_s_tok` report MoE reads and overlap cost. `text` is the final answer and `reasoning` the final thinking span (empty
 unless the model reasoned), same split as the per-token lines. `finish` is the engine's reason the
-generation ended: `stop`, `length`, `cancelled` or `context_full`. `BMOE_ERROR` with `fatal:false`
+generation ended: `stop`, `stop_sequence` (one of the request's `stop` strings; the text ends
+before it), `length`, `cancelled` or `context_full`. `n_prompt_reused` is the prompt tokens taken
+from the KV instead of being prefilled this turn. `BMOE_ERROR` with `fatal:false`
 is a failed request that the engine rolled back (an invalid request, a prompt plus `n_predict`
 over `n_ctx`, a decode failure) and leaves the session usable; `fatal:true` is a streaming I/O
 failure the session cannot recover from, and means the process is ending.

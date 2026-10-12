@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **Core request options for stateless API clients.** `GenerateRequest::reuse_kv_prefix` keeps the
+  KV prefix a new full-transcript request starts with, so an OpenAI or Anthropic client that resends
+  the conversation prefills only the new part; `RunSummary::n_prompt_reused` reports it (also in
+  `BMOE_DONE`). `GenerateRequest::stop` ends generation at the first stop sequence, cuts the text
+  before it, reports `FinishReason::StopSequence` (`stop_sequence`) and `RunResult::stop_sequence`,
+  and holds back from the token callbacks any tail that could still start one. The session protocol
+  accepts `"reuse_kv_prefix"` and `"stop"` on `generate`. Test `request_options_*`: reuse answers
+  bit for bit as a continued conversation, and the stream ends exactly before the stop sequence.
 - **`--odirect-zero-copy`** (BigMoeOnEdge `perf/odirect-zero-copy`): read expert slices straight
   into the expert cache with no bounce copy, by placing each layer buffer at the file's own
   sub-page remainder. Experimental and off by default; the engine reports `odirect-zero-copy ON` or
