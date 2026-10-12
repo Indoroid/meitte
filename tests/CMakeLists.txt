@@ -3,6 +3,11 @@
 
 add_executable(bmoe_moe_gates moe_gates.cpp)
 target_link_libraries(bmoe_moe_gates PRIVATE bmoe_core)
+# G16 probes the loopback rpc-server port before registering it.
+if(WIN32)
+    target_link_libraries(bmoe_moe_gates PRIVATE ws2_32)
+endif()
+target_include_directories(bmoe_moe_gates PRIVATE ${CMAKE_SOURCE_DIR}/core/src/moe)
 
 add_executable(bmoe_dense_model_test dense_model_test.cpp)
 target_link_libraries(bmoe_dense_model_test PRIVATE bmoe_core)
@@ -35,6 +40,14 @@ add_executable(bmoe_config_test config_test.cpp)
 target_link_libraries(bmoe_config_test PRIVATE bmoe_core)
 add_test(NAME config_validate COMMAND bmoe_config_test)
 
+# The parameter table (bmoe/params.h): every flag the CLI used to parse by hand must set the same
+# field to the same value, and to_args() must read back into the config it came from. Pure policy.
+add_executable(bmoe_params_test params_test.cpp)
+target_link_libraries(bmoe_params_test PRIVATE bmoe_core)
+add_test(NAME params_table COMMAND bmoe_params_test)
+
+# release_file_mappings: on Windows it must find and drop this process's own view + section of a
+# file and leave the placeholders in place; on POSIX it must report unsupported and touch nothing.
 add_executable(bmoe_mapping_release_test mapping_release_test.cpp)
 target_link_libraries(bmoe_mapping_release_test PRIVATE bmoe_core)
 target_include_directories(bmoe_mapping_release_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/io)
@@ -119,6 +132,14 @@ add_executable(bmoe_csv_summary_test csv_summary_test.cpp)
 target_link_libraries(bmoe_csv_summary_test PRIVATE bmoe_core)
 add_test(NAME csv_summary COMMAND bmoe_csv_summary_test)
 
+# decide()'s policy (the prompt split, choice checks and scoring, when the prefix state is
+# restored, stored or left alone) over a scripted fake backend. No model, no llama.cpp, so it runs
+# unconditionally; the same path on a real model is gate G18.
+add_executable(bmoe_decide_test decide_test.cpp)
+target_link_libraries(bmoe_decide_test PRIVATE bmoe_core)
+target_include_directories(bmoe_decide_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src/engine/decide)
+add_test(NAME decide_policy COMMAND bmoe_decide_test)
+
 find_program(PYTHON3 NAMES python3 python)
 if(PYTHON3)
     if(BMOE_BUILD_SHARED)
@@ -182,6 +203,17 @@ if(PYTHON3)
             set_tests_properties(reasoning_budget_${spec} PROPERTIES FIXTURES_REQUIRED ${_fixture})
         endforeach()
 
+        # nemotron_h_moe (gate-less up/down experts, hybrid Mamba2 stack): byte-identity gates only.
+        # The conversation tests above assume an attention-only KV that accepts partial removal.
+        set(_nemotron "${CMAKE_CURRENT_BINARY_DIR}/tiny-moe-nemotron_h_moe.gguf")
+        add_test(NAME moe_make_tiny_model_nemotron_h_moe
+                 COMMAND ${CMAKE_COMMAND} -E env "PYTHONPATH=${_gguf_py}"
+                         ${PYTHON3} ${CMAKE_SOURCE_DIR}/scripts/make-tiny-moe.py
+                         --arch nemotron_h_moe --out ${_nemotron})
+        set_tests_properties(moe_make_tiny_model_nemotron_h_moe PROPERTIES FIXTURES_SETUP TINY_MOE_MODEL_nemotron_h_moe)
+        add_test(NAME moe_gates_nemotron_h_moe COMMAND bmoe_moe_gates ${_nemotron})
+        set_tests_properties(moe_gates_nemotron_h_moe PROPERTIES FIXTURES_REQUIRED TINY_MOE_MODEL_nemotron_h_moe)
+
         add_test(
             NAME moe_make_tiny_model_split
             COMMAND ${CMAKE_COMMAND} -E env "PYTHONPATH=${_gguf_py}"
@@ -199,3 +231,9 @@ if(PYTHON3)
 else()
     message(WARNING "python3 not found: parity and MoE byte-identity gates are disabled")
 endif()
+
+# The hardware planner. Pure policy over synthetic machine profiles — no model, no llama.cpp, no
+# device — which is the point: rules meant to hold on hardware we do not own are checked here.
+add_executable(bmoe_planner_test planner_test.cpp)
+target_link_libraries(bmoe_planner_test PRIVATE bmoe_core)
+add_test(NAME planner COMMAND bmoe_planner_test)

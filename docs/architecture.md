@@ -13,11 +13,22 @@ cli/            meitte-cli and meitte-server — parse flags; the only place env
 core/
   include/bmoe/ ports (interfaces) + config, pure policy, no llama.cpp dependency
     config.h        RunConfig + validate()
+    params.h        the parameter table: every RunConfig tunable described once (flag, type,
+                    bounds, help); the CLI parses from it, front-ends render settings from its JSON
     expert_source.h IExpertSource — the residency strategy port
     row_source.h    IRowSource - the row-gathered residency port
     recipe.h        MoeRecipe + registry
     metrics.h       TokenMetrics / RunSummary + IMetricsSink
     runtime.h       run() entry point
+    hardware_profile.h, model_profile.h, placement.h
+                    the planner's inputs: a machine, a model and llama.cpp's capacity placement as
+                    facts, with no platform, vendor or architecture name in them
+    planner.h, allocate.h, plan.h
+                    the planning rules: (machine, model, request) -> a resolved RunConfig with the
+                    reason for each knob; the cost model and the memory ledger; the plan as a value
+    probe.h         the adapters' entry points: what fills the two profiles
+    auto_plan.h     one call that probes in order and plans: what --auto and /api/plan run
+    decide.h        DecideRequest / DecideResult: choose from a list with one prefill
   src/
     io/         the platform layer — every OS conditional in core/ lives here
                 platform_io — O_DIRECT reads + reserve/commit/evict VM, CPU spin hint
@@ -31,16 +42,35 @@ core/
                 router_predict — next-layer prediction, its probe, route-ahead
                 dense_weights — non-expert weight policy + the residency sensor
                 row_stream - row-gathered tables served from flash (see row-gathered-tables.md)
+                device_arena - one or two layer slots on a prefill device, held for the session or
+                  only during a prefill, filled from flash, whole layers or only the routed experts
+                  (npu-prefill.md)
+                decide_probe - experimental per-decision expert usage and layer-exit answers (decide.md)
     engine/     session — the Session pimpl; state in session_impl.h, split by phase:
                   session_open (load, contexts, capture, binding), session_generate (prefill +
                   decode/speculation loop), session_perplexity, session_context (growth,
-                  summarization, MTP draft context)
+                  summarization, MTP draft context), session_decide
+                prefill_device - moves layer weights and model state onto a device per graph
+                prefill_path - the prefill device for one session: setup, placement, device decode
                 runtime — the one-shot run() wrapper over a Session
                 c_api — stable opaque handles for C and FFI callers
                 llama_glue — enum mapping, batches, tokenization, sampler chain (llama.h only)
                 chat_render — request messages/tools ↔ chat template inputs (llama.cpp `common`)
                 chat_parse — reasoning-parser wiring (llama.cpp `common`, see seam.md)
                 thinking_control — how "thinking off" is honoured, probed per model
+                logits, prefill_support — log-softmax, batch filling and prefill attribution,
+                  shared by generate / perplexity / decide
+                decide/ — Session::decide() (see decide.md): pure policy over an IDecideBackend
+                  port (prompt split, choice scoring, IPrefixCache), plus one llama.cpp adapter
+    plan/       the hardware planner (hardware-planning.md). Two halves that must not mix:
+                planner, allocate, plan - pure rules over the profiles; no I/O, no platform names
+                hardware_probe, model_probe, storage_probe, headroom_probe, bandwidth_probe,
+                  device_probe, placement_probe, isolated_probe (a device asked in a second
+                  process, so a driver that ends it ends only that) - the adapters that measure a
+                  machine and read a
+                  gguf; the only place in the planner where a platform or llama.cpp may appear
+                auto_plan - the probe order and the plan, one call shared by every frontend
+    params.cpp  the parameter table's rows (see params.h)
     multimodal/ mtmd projector adapter + bounded file, FFmpeg audio, and sampled-video input
     metrics/    csv_metrics_sink, route_trace_sink, decode_trace_sink
 third_party/
@@ -49,7 +79,9 @@ tests/          byte-identity gates
 examples/android an APK that drives meitte-cli via ProcessBuilder
 ```
 
-Dependencies point inward: adapters depend on the port headers, the CLI composes them.
+Dependencies point inward: adapters depend on the port headers, the CLI and the server compose
+them. The server and the web UI meet only at the HTTP API; the UI knows no engine parameter by
+name, it renders whatever `GET /api/params` describes.
 The pure-policy code (`config.cpp`, `arch_registry.cpp`) compiles with no native
 dependency, so a subset of the project builds and is testable before llama.cpp is
 fetched.
@@ -104,6 +136,9 @@ The composition root is `Session` (core/src/engine/session_*.cpp):
 2. `generate()` — prefill the prompt, then greedily decode `n_predict` tokens, reporting
    per-token metrics. Callable repeatedly; the expert cache stays warm between calls (see
    [session.md](session.md)). Cancellable mid-flight via the abort callback.
+   `decide()` is the other way to use an open session: one prefill and no decode, reading which of
+   a list of choices the model would answer (off unless the session is opened with it; see
+   [decide.md](decide.md)).
 3. Destructor — tear down in order: I/O pool, context, hook, model, backend.
 
 `run()` (core/src/engine/runtime.cpp) is a thin one-shot wrapper — open, one generate, close —

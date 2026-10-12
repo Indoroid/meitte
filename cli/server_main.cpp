@@ -674,6 +674,7 @@ static void send_json_error(int fd, int status, const char * msg, bool ka) {
 // ── Server state ─────────────────────────────────────────────────────────────
 
 struct ServerConfig {
+    frontend::PlannerFlags plan_flags; // the probe options /api/plan reuses
     std::string host = "127.0.0.1";
     std::string model_alias;
     int port = 8080;
@@ -1276,6 +1277,7 @@ static void print_usage(const char * argv0) {
                 "  BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_OVERLAP, BMOE_PREFETCH,\n"
                 "  BMOE_N_EXPERT_USED, BMOE_PREDICT_LOG and BMOE_PREDICT_PREFETCH also apply\n",
                 argv0);
+    frontend::print_planner_usage();
 }
 
 int main(int argc, char ** argv) {
@@ -1298,6 +1300,7 @@ int main(int argc, char ** argv) {
     bool chat_template_seen = false;
     bool chat_template_file_seen = false;
     std::string chat_template_file;
+    frontend::PlannerFlags planner; // --auto, --plan, --probe*, --describe-params, --show-config
 
     std::set<std::string> seen;
 
@@ -1601,10 +1604,13 @@ int main(int argc, char ** argv) {
         } else if (a == "--version") {
             std::printf("%s\n", meitte::version());
             return 0;
+        } else if (frontend::parse_planner_flag(a, planner, next)) {
+            // --auto, --plan, --probe*, --describe-params, --show-config (frontend_util.h)
         } else {
-            std::fprintf(stderr, "meitte-server: unknown arg: %s\n", a.c_str());
-            print_usage(argv[0]);
-            return 1;
+            // The engine's parameter table: the knobs this parser does not spell out by hand.
+            const int rc = frontend::apply_table_flag(cfg, argc, argv, i, "meitte-server");
+            if (rc == 1) print_usage(argv[0]);
+            if (rc) return rc;
         }
     }
 
@@ -1705,6 +1711,11 @@ int main(int argc, char ** argv) {
 
     if (cfg.moe.enabled && !cfg.moe.cache_auto && !seen.count("--cache-mb") && std::getenv("BMOE_CACHE_MB") == nullptr)
         cfg.moe.cache_auto = true;
+
+    double predicted_s_per_token = 0.0;
+    if (const int rc = frontend::run_planner_steps(cfg, planner, seen, "meitte-server", predicted_s_per_token); rc >= 0)
+        return rc;
+    srv.plan_flags = planner;
 
     if (list_buffer_types) {
         const std::vector<std::string> types = Session::available_tensor_buffer_types();

@@ -5,6 +5,7 @@
 //   session_open.cpp       model load, context creation, capture and streamer binding
 //   session_generate.cpp   prompt rendering, prefill, decode/speculation loop, summary
 //   session_perplexity.cpp teacher-forced scoring
+//   session_decide.cpp     decide(): choose from a list with one prefill and no decode
 //   session_context.cpp    context growth, summarization and the MTP draft context
 //
 // Internal header: it includes llama.cpp's `common` layer (not the stable public API), so it must not
@@ -15,11 +16,14 @@
 #include "bmoe/route_trace.h"
 #include "bmoe/session.h"
 #include "run_tally.h"
+#include "prefill_path.h"
+#include "decide/prefix_cache.h"
 #include "../io/mapping_release.h"
 #include "../moe/dense_weights.h"
 #include "../moe/expert_stream_source.h"
 #include "../moe/gguf_offsets.h"
 #include "../moe/router_hook.h"
+#include "../moe/decide_probe.h"
 #include "../multimodal/mtmd_runtime.h"
 
 #include "llama.h"
@@ -27,6 +31,7 @@
 #include "chat.h"
 #include "speculative.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -52,6 +57,11 @@ common_speculative * create_mtp_driver(const SpecConfig & spec, llama_context * 
 // unchanged. Every partial KV removal of the session goes through here (see session_testing.h).
 bool kv_remove_tail(llama_context * ctx, llama_pos keep);
 
+// Width of one prefill piece under a prefill device: one ubatch, so a decode call is one graph.
+inline int prefill_piece(const SessionConfig & cfg) {
+    return cfg.n_ubatch > 0 ? std::min(cfg.n_ubatch, cfg.n_batch) : cfg.n_batch;
+}
+
 } // namespace detail
 
 // All native state lives here, behind the pimpl. Built once by Session::open(); every
@@ -71,6 +81,28 @@ struct Session::Impl {
     std::unique_ptr<RouterHook> hook; // heap: its address is baked into cparams.cb_eval_user_data
     ExpertStreamSource source;
     std::atomic<bool> capture_abort{false};
+
+    // Prefill on an accelerator (SessionConfig::prefill); null when off. Created before the model
+    // load, whose device list it holds, and opened after it.
+    std::unique_ptr<detail::PrefillPath> prefill;
+
+    // Where the next graph actually goes: a device with no room right now leaves it on the host.
+    bool place_prefill(bool on_device) { return prefill ? prefill->place(on_device) : false; }
+    int decode_placed(llama_context * c, const llama_batch & b) {
+        return prefill ? prefill->decode(c, b) : llama_decode(c, b);
+    }
+    // Every exit from a prefill (errors and cancellation included) leaves the weights on the host:
+    // the next graph may be a decode, and the CPU cannot read a device buffer.
+    struct PlacementGuard {
+        Impl & im;
+        ~PlacementGuard() { im.place_prefill(false); }
+    };
+    // Every full clear of the target context's memory goes through here: llama.cpp clears the
+    // buffers it allocated, which a moved model state no longer lives in.
+    void clear_memory(llama_context * c) {
+        llama_memory_clear(llama_get_memory(c), true);
+        if (prefill) prefill->clear_state();
+    }
 
     // The MTP draft source (SpecConfig::source == mtp). A SECOND context over the SAME model,
     // created with ctx_type = MTP so llama.cpp builds the nextn graph instead of the trunk one. It
@@ -123,6 +155,14 @@ struct Session::Impl {
     std::vector<MediaInput> retained_media;
     llama_pos kv_n_past = 0;
     size_t kv_last_generation_start = 0;
+
+    // decide()'s kept prefix state. Chosen at the first decide() (the policy needs the backend's
+    // answer on prefill cost), null when the policy keeps none.
+    std::unique_ptr<detail::IPrefixCache> decide_cache;
+    bool decide_cache_chosen = false;
+    // The experimental decide() probe, and how many decisions it has written.
+    std::unique_ptr<DecideProbe> decide_probe;
+    int decide_seq = 0;
 
     // Route trace (diagnostics): null unless requested AND streaming is on — there is no routing
     // to trace otherwise.

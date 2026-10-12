@@ -163,6 +163,36 @@ bool parse_context_mode(const std::string & value, ContextMode & out) {
     return true;
 }
 
+namespace {
+
+struct PrefixCacheModeName {
+    PrefixCacheMode mode;
+    const char * name;
+};
+// The one place the spellings live: both directions read this table.
+constexpr PrefixCacheModeName kPrefixCacheModes[] = {
+    {PrefixCacheMode::Auto, "auto"},
+    {PrefixCacheMode::On, "on"},
+    {PrefixCacheMode::Off, "off"},
+};
+
+} // namespace
+
+const char * prefix_cache_mode_name(PrefixCacheMode m) {
+    for (const auto & e : kPrefixCacheModes)
+        if (e.mode == m) return e.name;
+    return kPrefixCacheModes[0].name;
+}
+
+bool parse_prefix_cache_mode(const std::string & s, PrefixCacheMode & out) {
+    for (const auto & e : kPrefixCacheModes)
+        if (s == e.name) {
+            out = e.mode;
+            return true;
+        }
+    return false;
+}
+
 ValidationResult validate(const RunConfig & cfg) {
     ValidationResult r;
     auto fail = [&](std::string msg) {
@@ -321,6 +351,63 @@ ValidationResult validate(const RunConfig & cfg) {
                     "lower spec.draft_max.");
     }
 
+    if (cfg.prefill.enabled()) {
+        if (cfg.prefill.min_tokens < PrefillDeviceConfig::min_tokens_floor)
+            return fail("prefill.min_tokens must be >= " + std::to_string(PrefillDeviceConfig::min_tokens_floor) +
+                        ": a one-token device graph would share its shape with a CPU decode graph, and llama.cpp "
+                        "reuses a same-shaped graph without re-scheduling it.");
+        if (cfg.prefill.load_threads < 1 || cfg.prefill.load_threads > PrefillDeviceConfig::load_threads_max)
+            return fail("prefill.load_threads must be in [1, " + std::to_string(PrefillDeviceConfig::load_threads_max) +
+                        "]");
+        if (cfg.prefill.slots < PrefillDeviceConfig::slots_min || cfg.prefill.slots > PrefillDeviceConfig::slots_max)
+            return fail("prefill.slots must be 1 or 2");
+        if (cfg.prefill.min_tokens > cfg.n_ctx)
+            return fail("prefill.min_tokens=" + std::to_string(cfg.prefill.min_tokens) +
+                        " exceeds n_ctx=" + std::to_string(cfg.n_ctx) + ": no prefill could ever reach the device.");
+        // A prompt is fed in ubatch-wide pieces (the session prefills in n_ctx-wide batches, so the
+        // ubatch is the width whenever it is set), and a piece narrower than min_tokens stays on the
+        // CPU: without this the only sign would be prefill_dev_tokens=0.
+        if (cfg.n_ubatch > 0 && cfg.n_ubatch < cfg.prefill.min_tokens)
+            return fail("n_ubatch=" + std::to_string(cfg.n_ubatch) + " is narrower than prefill.min_tokens=" +
+                        std::to_string(cfg.prefill.min_tokens) + ": no prefill could ever reach the device.");
+        // The row policy serves dense tables from the eval callback at each gather, and a device graph
+        // bypasses the host streaming path in that callback entirely.
+        if (cfg.moe.row_stream)
+            return fail("prefill.device does not combine with moe.row_stream: the tables it serves are "
+                        "gathered on the host, inside a graph that would run on the device");
+        // Speculation widens CPU graphs past one token and runs a second context over the same
+        // weights; both would break the width invariant the rebind relies on.
+        if (cfg.spec.enabled()) return fail("prefill.device does not combine with speculative decoding");
+        // Meitte-only paths that decode outside the placed prefill loop. Media chunks decode through
+        // libmtmd's helper, and context growth or compaction replaces the context the device path was
+        // opened on. Both are refused until each is placed and gated (docs/limitations.md).
+        if (cfg.multimodal.enabled())
+            return fail("prefill.device does not combine with multimodal input yet: media chunks decode "
+                        "outside the placed prefill");
+        if (cfg.context.grow != ContextMode::Off || cfg.context.summarize != ContextMode::Off ||
+            cfg.context.trim != ContextMode::Off)
+            return fail("prefill.device does not combine with context growth, summarization or trimming yet: "
+                        "they replace the context the device path was opened on");
+        // llama.cpp saves and restores a sequence through views of the KV cache it made once, over the
+        // buffer the state was allocated in; the move rebinds the cache tensors, not those views, so a
+        // saved or restored state would be read from and written to memory the model no longer uses.
+        if (!(cfg.prefill.routed_full_frac > PrefillDeviceConfig::routed_full_frac_min &&
+              cfg.prefill.routed_full_frac <= PrefillDeviceConfig::routed_full_frac_max))
+            return fail("prefill.routed_full_frac must be in (0, 1]");
+        if (cfg.decide.enabled && cfg.decide.prefix_cache == PrefixCacheMode::On)
+            return fail("decide.prefix_cache=on does not combine with prefill.device: the kept state would be "
+                        "saved from where the model state was before it moved. Use auto (off with a device) "
+                        "or off.");
+    }
+
+    // The decide probe reads graph nodes from the eval callback, which only streaming or a prefill
+    // device installs; without either it would write empty lines.
+    if (!cfg.decide.probe_path.empty()) {
+        if (!cfg.decide.enabled) return fail("decide.probe_path needs decide.enabled");
+        if (!cfg.moe.enabled && !cfg.prefill.enabled())
+            return fail("decide.probe_path needs moe.enabled or prefill.device (the eval callback)");
+    }
+
     // overlap is meaningless without streaming (it gates the streamer's own reads). The
     // hook-availability check is deferred to run(): validate() stays pure (no native).
     if (cfg.moe.overlap && !cfg.moe.enabled) {
@@ -409,8 +496,10 @@ ValidationResult validate(const RunConfig & cfg) {
                         "split exists to move per-expert page commits off the publish path, and the "
                         "shared-slot path has none.");
         }
-        if (m.predict_spec_max < 0 || m.predict_spec_max > 8) {
-            return fail("moe.predict_spec_max must be in [0, 8] (0 = retention only, no speculation)");
+        if (m.predict_spec_max < 0 || m.predict_spec_max > MoeStreamConfig::predict_spec_max_limit) {
+            return fail("moe.predict_spec_max must be in [0, " +
+                        std::to_string(MoeStreamConfig::predict_spec_max_limit) +
+                        "] (0 = retention only, no speculation)");
         }
         if (m.predict_prefetch && m.prefetch_layers > 0) {
             return fail("moe.predict_prefetch and moe.prefetch_layers are mutually exclusive: they "

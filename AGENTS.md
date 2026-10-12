@@ -86,9 +86,12 @@ Android CLI: `pwsh scripts/build-android.ps1` (needs the NDK), then build the AP
 - When a model or API cannot support a feature, record the trigger, cause, evidence,
   affected behavior, and possible upstream remedy in `docs/limitations.md`. Do not mask
   the failure with model names, fabricated tokens, or private graph changes.
-- Keep all execution on CPU, including projectors and draft contexts. GPU and iOS support
-  are out of scope. Prioritize Unix, then Windows, then Android. Android app maintenance
-  and app version changes are deferred for current core development, not release approval.
+- Keep execution on CPU by default, including projectors and draft contexts. Accelerators are
+  opt-in and limited to the prefill device (`--prefill-device`) and the planner's placement: a
+  run that names no device, or a build without an accelerator backend, stays on the CPU and is
+  byte-identical to one without the feature. iOS is out of scope. Prioritize Linux and Android,
+  then the other Unix hosts, then Windows. Android app maintenance and app version changes are
+  deferred for current core development, not release approval.
 - Use ASD-STE100 Simplified Technical English for code comments. Explain ownership and
   invariants where needed. The standard governs prose, not C++ syntax or upstream names.
 - Use clangd for C/C++ diagnostics and formatting with the repository style. Formatting

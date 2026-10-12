@@ -70,6 +70,12 @@ typedef struct meitte_config {
      * reason: a field placed in an older layout's tail padding is read from uninitialized bytes when
      * a caller compiled against that layout passes its sizeof. */
     int32_t reserved0;
+    /* Engine parameters by their key in the parameter table (bmoe/params.h), each "key=value", e.g.
+     * "prefill-device=HTP0" or "decide=true". Applied after the fields above, so a key that duplicates
+     * one of them wins. meitte_describe_params() lists every key. One group of two 8-byte fields, so
+     * the layout stays aligned for the next appended group. */
+    const char * const * params;
+    size_t params_count;
 } meitte_config;
 
 /* An array element: it has no size field, so its layout is fixed. New media metadata needs a new
@@ -132,6 +138,25 @@ MEITTE_API const char * meitte_result_error(const meitte_result * result);
 MEITTE_API const char * meitte_result_text(const meitte_result * result);
 MEITTE_API const char * meitte_result_reasoning(const meitte_result * result);
 MEITTE_API void meitte_result_free(meitte_result * result);
+
+/* Every engine parameter (key, type, bounds, default, help) as a JSON array. The string is owned by
+ * the library and valid for the life of the process. */
+MEITTE_API const char * meitte_describe_params(void);
+
+/* Choose one of `choices` from a single prefill and no decode (the session must be opened with the
+ * "decide=true" parameter). Writes up to `logp_capacity` log-probabilities of each choice's first
+ * token, in order, and the index of the best one. Returns 0 on success, 1 when cancelled, -1 on
+ * error (the message goes to `error`). Inputs are borrowed for the call. */
+MEITTE_API int meitte_decide(meitte_session * session,
+                             const char * prefix,
+                             const char * suffix,
+                             const char * const * choices,
+                             size_t choice_count,
+                             double * logp,
+                             size_t logp_capacity,
+                             int32_t * best,
+                             char * error,
+                             size_t error_capacity);
 
 #ifdef __cplusplus
 }

@@ -50,8 +50,10 @@ TOKEN_CALLBACK = ct.CFUNCTYPE(ct.c_int, ct.c_void_p, ct.c_size_t, ct.c_void_p)
 
 
 def bind(library):
-    library.meitte_default_config.restype = Config
-    library.meitte_default_request.restype = Request
+    # The _init functions fill only the bytes this script's structs own. The by-value defaults return
+    # the library's own sizeof, which overruns a shorter Python mirror of the struct.
+    library.meitte_config_init.argtypes = [ct.POINTER(Config), ct.c_size_t]
+    library.meitte_request_init.argtypes = [ct.POINTER(Request), ct.c_size_t]
     library.meitte_open.argtypes = [ct.POINTER(Config), ct.c_char_p, ct.c_size_t]
     library.meitte_open.restype = ct.c_void_p
     library.meitte_generate.argtypes = [ct.c_void_p, ct.POINTER(Request), TOKEN_CALLBACK, ct.c_void_p]
@@ -77,7 +79,8 @@ def main():
 
     library = ct.CDLL(args.library)
     bind(library)
-    config = library.meitte_default_config()
+    config = Config()
+    library.meitte_config_init(ct.byref(config), ct.sizeof(Config))
     error = ct.create_string_buffer(512)
 
     if not args.model:
@@ -92,7 +95,8 @@ def main():
         raise RuntimeError(error.value.decode())
     result = None
     try:
-        request = library.meitte_default_request()
+        request = Request()
+        library.meitte_request_init(ct.byref(request), ct.sizeof(Request))
         request.prompt = args.prompt.encode()
         request.max_tokens = args.max_tokens
         pieces = []

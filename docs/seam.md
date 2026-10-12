@@ -210,6 +210,23 @@ trade-off is deliberate and is also noted at the link site in the root `CMakeLis
 gates themselves run with the template off (raw prompt), so they stay deterministic and are
 unaffected by this dependency.
 
+### The capacity fitter: `common/fit.h`
+
+The third and newest consumer of `common` is the hardware planner's first stage. `--auto` calls
+`common_fit_params` — llama.cpp's own capacity fitter, the one behind its `--fit` flag — to place
+weights across the registered devices by projected memory, and reads back which layers kept their
+routed experts on the host and what the placed model reserves there for context and compute. That
+is everything the second stage (the flash tier) needs, and it is the only thing taken from the
+fitter: its host `model` term is not our dense set and is not used for it.
+
+The call lives in exactly one file, `core/src/plan/placement_probe.cpp`, and returns a pure-policy
+struct (`bmoe/placement.h`) with no llama.cpp types in it. The planner accepts `fitted = false` and
+then plans as if there were no devices at all, so if a submodule bump moves the fitter's signature
+the blast radius is that one file and the device axis declines rather than the build failing.
+Note that the fitter refuses to run when `tensor_buft_overrides` is already set, so the
+experts-on-host constraint is not passed in: it is read out of the overrides the fitter writes, and
+enforced by the session, which routes every pattern to the CPU buffer type at load.
+
 ## The one ggml behaviour we depend on
 
 That a node marked "needed" is computed and synchronized **before** the non-ask callback,
@@ -220,6 +237,58 @@ returns. This is how `ggml_backend_sched` implements the eval-callback today
 - the [byte-identity gates](../tests/moe_gates.cpp) assert lossless output, which fails
   loudly if the ordering ever changes;
 - CI runs the gates on every submodule bump.
+
+## Per-graph placement (`--prefill-device`)
+
+The prefill device ([npu-prefill.md](npu-prefill.md)) adds no llama.cpp change, but it leans on these
+behaviours of the public surface and two naming conventions. All are exercised by gates G16 and G17,
+except where noted:
+
+- **The scheduler assigns a backend per graph, from the weight's buffer.** `ggml_backend_sched` looks
+  at each weight's `tensor->buffer` every time it splits a graph, so rebinding `buffer`, `data` and
+  `extra` (and, for a weight carried to the device in another type, `type` and `nb`) between graphs
+  moves the weight's ops. The rebind happens only between `llama_decode` calls.
+- **Graph reuse skips that decision.** A graph shaped like the previous one is reused without being
+  re-scheduled, so device graphs and CPU graphs are kept to different widths (`--prefill-min-tokens`).
+  A llama.cpp change that reused graphs across shapes would break this; G16 would show it.
+- **`ggml_backend_tensor_set` is where a backend lays weights out its own way.** The arena writes each
+  expert through a per-expert view, and writes each slot tensor once whole at load so the backend
+  records its layout for the tensor the op actually reads.
+- **A buffer's usage is what a backend reads to decide how to hold it.** `ggml_backend_buffer_set_usage`
+  marks a buffer `WEIGHTS` or not, and a backend may lay out and map a `WEIGHTS` buffer for its
+  matmul alone (Hexagon with DMA64 maps it for DMA only, and most of its other kernels then refuse it
+  at run time). So the engine marks only the matmul matrices `WEIGHTS` and puts every other layer weight
+  (norms, biases, scales), as found from the ops the capture graph applies to it, in plain device
+  memory.
+- **Two context knobs.** `n_outputs_max` bounds the logit rows the context reserves, and toggling
+  `llama_set_causal_attn` off and on makes the next decode redo the compute-buffer reservation, which
+  the engine uses once, with the weights on the device, so the CPU does not keep a reservation for a
+  graph it never runs.
+- **Concurrent uploads into one buffer.** The arena's loader threads call `ggml_backend_tensor_set`
+  on different views of the same slot buffer at once. ggml does not document this as thread-safe; it
+  holds for the CPU, RPC and Hexagon backends today because each write touches only its own bytes.
+  The gates cover the CPU (through RPC); on the NPU only a device run does.
+- **Layer weights are named `blk.N.`** The engine selects the weights it moves by that prefix. It is
+  the GGUF tensor naming every architecture in llama.cpp uses, not an API: a model that named its
+  layers otherwise would keep them on the CPU, correct but not faster.
+- **Model state tensors are named `cache_`.** The capture tells the KV and recurrent state apart from
+  weights by the `cache_` prefix llama.cpp's memory modules give them, so the prefill can place the
+  state where both sides can address it. That prefix is internal naming: if upstream renamed it the
+  state would stay in CPU memory, again correct but slower, and `prefill_dev_nodes` in the telemetry
+  would drop. Check it on each bump.
+- **With no devices given, llama.cpp picks them.** `llama_model_params::devices` left null lists every
+  GPU-type device (integrated ones only when no discrete one is found), and the context opens a
+  backend on each, layers or not. The engine keeps that choice only when a layer is placed on a
+  device (`--devices auto`, the default) or when told to (`--devices all`); with nothing placed it
+  passes the CPU alone, because a backend that is merely present takes nodes and rounds wide graphs
+  differently. Where it does keep the choice and there is no `--prefill-device`, it drops a device
+  whose capabilities (`host_buffer`, `buffer_from_host_ptr`) say it cannot reach
+  host memory, and then passes the rest explicitly, repeating that integrated-device rule. If upstream
+  changed its selection, only a build carrying such a device (Hexagon) would see the difference. Not
+  gated: the host build has no such device.
+- **A device that fails to open throws.** Hexagon opens its DSP session in `ggml_backend_dev_init`
+  and throws when it cannot. The engine calls it once before the load, catches that, and keeps the run
+  on the CPU; the backend caches the session, so the context's own init reuses it.
 
 ## Upgrading llama.cpp
 

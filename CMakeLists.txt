@@ -14,7 +14,7 @@ cmake_minimum_required(VERSION 3.21)
 # --version, and the run-parameter preamble of every metrics CSV), so a committed benchmark file
 # says which engine produced it. Keep it in step with CHANGELOG.md; align the app's versionName
 # when preparing a release.
-project(bigmoeonedge VERSION 0.24.0 LANGUAGES C CXX)
+project(bigmoeonedge VERSION 0.25.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -55,6 +55,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/CMakeLists.txt")
     # Use upstream's FFmpeg-backed sampled-video helper.
     set(MTMD_VIDEO           ON  CACHE BOOL "" FORCE)
     set(LLAMA_CURL           OFF CACHE BOOL "" FORCE)  # common's model-download path unused
+    # The prefill-device gates (G16/G17) need a second device to move weights onto, and the one every
+    # host has is a loopback rpc-server fronting the CPU. A test fixture, not a feature: host test
+    # builds only, no frontend accepts an RPC endpoint, and it is not forced: -DGGML_RPC=OFF still
+    # wins, and the gates then report themselves skipped.
+    if(BMOE_BUILD_TESTS AND NOT ANDROID)
+        set(GGML_RPC ON CACHE BOOL "ggml: use RPC")
+    endif()
     add_subdirectory(third_party/llama.cpp EXCLUDE_FROM_ALL)
 endif()
 
@@ -64,8 +71,16 @@ endif()
 
 add_subdirectory(core)
 
-if(BMOE_BUILD_CLI AND BMOE_HAVE_LLAMA)
+# An app is the only thing that runs on iOS, so there the CLI is built as one: the same main.cpp,
+# inside the harness's bundle, and no command-line binary.
+if(BMOE_HAVE_LLAMA AND IOS)
+    add_subdirectory(examples/ios)
+elseif(BMOE_BUILD_CLI AND BMOE_HAVE_LLAMA)
     add_subdirectory(cli)
+endif()
+
+if(BMOE_BUILD_SERVER AND BMOE_HAVE_LLAMA)
+    add_subdirectory(server)
 endif()
 
 if(BMOE_BUILD_TESTS AND BMOE_HAVE_LLAMA)

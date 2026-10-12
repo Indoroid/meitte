@@ -15,6 +15,7 @@
 #pragma once
 
 #include "bmoe/config.h"
+#include "bmoe/decide.h"
 #include "bmoe/metrics.h"
 #include "bmoe/runtime.h"
 
@@ -36,6 +37,7 @@ class IIoTraceSink;
 struct SessionConfig {
     std::string model_path;
     int n_threads = 4;
+    int n_threads_batch = 0; // 0 = same as n_threads. See RunConfig::n_threads_batch.
     int n_ctx = 2048;
     ContextPolicy context;
     int n_batch = 2048; // prefill chunk capacity; capped at n_ctx in open()
@@ -54,6 +56,11 @@ struct SessionConfig {
     // Active-expert (top-k) override applied at load via a kv_override on the arch-prefixed
     // expert_used_count key. 0 = use the model's own count. See RunConfig::n_expert_used.
     int n_expert_used = 0;
+    // The first stage's placement, applied at load. See RunConfig::n_gpu_layers.
+    int n_gpu_layers = 0;
+    std::vector<std::string> buft_overrides;
+    // See RunConfig::device_use.
+    DeviceUse device_use = DeviceUse::Auto;
     // Compute-trace granularity: false = a barrier per graph node, true = per layer boundary.
     // Only read when a compute-trace sink is attached. See RunConfig::compute_trace_layers.
     bool compute_trace_layers = false;
@@ -64,6 +71,10 @@ struct SessionConfig {
     // See RunConfig::spec.
     SpecConfig spec;
     MultimodalConfig multimodal;
+    // Wide prefill graphs on an accelerator, decode on the CPU. Fixed for the session: the device
+    // joins the scheduler at load. See RunConfig::prefill.
+    PrefillDeviceConfig prefill;
+    DecideConfig decide; // decide()'s prefix-state policy. See RunConfig::decide.
 };
 
 // The RunConfig → SessionConfig mapping, in one place. Both entry points that open a session from a
@@ -307,6 +318,12 @@ public:
     // Owned copy of the last computed logits row for exact identity checks. Empty if no row exists.
     // Call between evaluations; the next decode replaces the backend row.
     std::vector<float> copy_logits() const;
+    // Read one decision (bmoe/decide.h): which of req.choices the model would answer next, from a
+    // single prefill and no decode. Ends any conversation generate() was continuing — a decision is
+    // not a turn — and keeps only the prefix state, which the next decide() may restore.
+    // cancel() stops it between prefill chunks. Refused (not fatal) unless the session was opened
+    // with SessionConfig::decide.enabled.
+    DecideResult decide(const DecideRequest & req);
 
 private:
     Session();

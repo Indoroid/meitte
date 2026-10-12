@@ -8,8 +8,10 @@ for the idea the project is built on.
 | Doc | What it answers |
 |---|---|
 | [architecture.md](architecture.md) | How the layers fit together, and why llama.cpp is not forked. |
+| [hardware-planning.md](hardware-planning.md) | `--auto` / `--plan`: the hardware planner — what it measures, the rule behind each knob, the memory ledger, and the devices it may arm for prefill. |
 | [moe-streaming.md](moe-streaming.md) | Why streaming experts from flash makes a >RAM model run at all. |
 | [seam.md](seam.md) | The exact contract with llama.cpp's public API, and how to upgrade the submodule. |
+| [backends.md](backends.md) | Every compute backend the pinned llama.cpp carries, which of them this engine has actually run on, and what each use of a device asks of one. |
 | [limitations.md](limitations.md) | What this does not do, what it cannot do, and the prior art it builds on. |
 | [roadmap.md](roadmap.md) | Themes worth exploring next. |
 | [bigmoe-sync.md](bigmoe-sync.md) | Which post-sync BigMoeOnEdge changes were ported and how Meitte exposes them. |
@@ -20,8 +22,10 @@ for the idea the project is built on.
 |---|---|
 | [adding-a-model.md](adding-a-model.md) | How to support a new MoE architecture (a recipe row plus a gate). |
 | [telemetry.md](telemetry.md) | The `BMOE_*` line protocol and CSV schema — the integration contract. |
+| [server-api.md](server-api.md) | The desktop server's HTTP API: settings from the parameter table, OpenAI-compatible chat, live events, models and the plan. |
 | [session.md](session.md) | Session lifecycle, KV prefix reuse, cancellation. |
 | [multimodal.md](multimodal.md) | Image/audio input through `meitte-cli` and OpenAI-compatible `meitte-server`, including limits and unsupported combinations. |
+| [decide.md](decide.md) | `--decide`: picking one of a list of choices from a single prefill, with no decode, and keeping the state after a shared prefix between calls. |
 | [cache-sizing.md](cache-sizing.md) | `--cache-mb auto`, the cache ceiling, and dense warm-up. |
 | [prefetch.md](prefetch.md) | `--prefetch K`: the design and why it cannot change output (with the lossy knobs off). |
 | [expert-dropping.md](expert-dropping.md) | `--drop-cold-experts F`: spending quality only where it buys a flash read, and why a cache-dependent setting's output is not reproducible. |
@@ -31,6 +35,7 @@ for the idea the project is built on.
 | [ngram.md](ngram.md) | `--ngram`: drafting from text that repeats, with no head and no draft decode — and why a source that abstains costs exactly an unspeculated step. |
 | [expert-prediction.md](expert-prediction.md) | `--predict-log`: how much of a routing can be known a layer early, measured against the predictor `--prefetch` already bets on — and why a good score still would not mean a faster decode. |
 | [route-ahead.md](route-ahead.md) | `--route-ahead N`: committing the routing to the N-layers-early prediction, so a prefetch of it can never miss — and what that costs in quality (experimental, lossy). |
+| [npu-prefill.md](npu-prefill.md) | `--prefill-device`: prefill on the NPU and decode on the CPU, a model larger than RAM fed to the NPU two layers at a time, and why decode stays on the CPU. |
 | [android-memory.md](android-memory.md) | What reclaims the engine's memory on a phone, which levers exist (almost none), and why the cache hit rate is what the kernel judges you by. |
 | [pressure.md](pressure.md) | Cache policy under memory pressure: why an unaffordable budget starts a reclaim war, why the adaptive governor was retired, and what the fixed `--cache-mb` / `--dense-weights` levers do. |
 

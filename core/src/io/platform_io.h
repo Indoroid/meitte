@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <thread>
+#include <string>
 #include <vector>
 
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
@@ -89,8 +90,11 @@ void aligned_free(void * p);
 // mapping, does not occur — and costs a few hundred ms per GiB to allocate. Do not assume the
 // bandwidth result holds on every gralloc; it is one device's.
 //
+// On Darwin it is wired memory: an anonymous mapping the process has locked, granted to any process
+// up to a system-wide total (see lockable_bytes).
+//
 // `pinned_max_bytes()` is the largest single allocation that will succeed: 0 where the platform has
-// no such allocation at all (host builds), and on Android the LOCK boundary rather than the
+// no such allocation at all (Windows and Linux builds), and on Android the LOCK boundary rather than the
 // allocation one — AHardwareBuffer_lock fails with EINVAL at 2^31 bytes even though allocation
 // reaches the 4 GiB format cap, so a larger working set must be split across several buffers.
 struct PinnedAlloc {
@@ -102,10 +106,41 @@ size_t pinned_max_bytes();
 bool pinned_alloc(size_t sz, PinnedAlloc * out);
 void pinned_free(PinnedAlloc * a);
 
+// How much this process may still hold reclaim-exempt in total: `lockable_bytes` through
+// pinned_alloc, `lock_in_place_bytes` through vm_pin. Both are what is LEFT, net of what is already
+// held against the same limit, so they move while the process runs and are read when a plan is
+// made. 0 means the platform grants none; `lock_unbounded` means it publishes no total of its own
+// and the caller must bound it by what the process may hold at all.
+constexpr uint64_t lock_unbounded = ~0ull;
+uint64_t lockable_bytes();
+uint64_t lock_in_place_bytes();
+
+// Run this same executable again as a child, with `args`, and wait at most `timeout_seconds` for
+// it. Its stdout and stderr come back together in `out` (the tail of them, if there is a great
+// deal). This exists for one job: doing something that can end a process - asking a device driver
+// to work - somewhere other than here. A child that outlives its time is killed, and how it ended
+// is reported rather than interpreted.
+//
+// `can_run_self()` is false where this platform has no implementation, and `run_self` then
+// reports CouldNotStart; a caller falls back to doing the work in its own process.
+enum class ChildOutcome { CouldNotStart, Exited, Signalled, TimedOut };
+struct ChildResult {
+    ChildOutcome outcome = ChildOutcome::CouldNotStart;
+    int code = 0; // the exit status, or the signal number
+};
+bool can_run_self();
+ChildResult run_self(const std::vector<std::string> & args, double timeout_seconds, std::string * out);
+
 // Reserved (address-only) region; physical pages appear on commit, vanish on evict.
 size_t vm_page();
 void * vm_reserve(size_t sz);
 bool vm_commit(void * p, size_t sz);
+// Ask the kernel to keep a committed span in RAM: not swapped, not compressed. False where the
+// platform refuses (a locked-memory limit, or no such call), and the span is then ordinary memory.
+// vm_evict releases a pinned span like any other. Whether this is available is the whole
+// difference between platforms: macOS grants it to any process up to most of RAM, Android caps it
+// at 64 KiB, and where it is granted it is what stops a cache hit from paying a decompression.
+bool vm_pin(void * p, size_t sz);
 void vm_evict(void * p, size_t sz);
 void vm_release(void * p, size_t sz);
 
@@ -117,6 +152,14 @@ void vm_release(void * p, size_t sz);
 // resident until reclaim. A no-op where the platform cannot (Windows host: a file view is not
 // VirtualFree-able, and the host build never streams). The range must be page-aligned by the caller.
 void vm_drop_file_pages(void * p, size_t sz);
+
+// Drop the resident pages of an ANONYMOUS range someone else allocated and still owns, keeping the
+// range valid: the next touch maps a zero page instead of faulting. For memory whose contents moved
+// elsewhere but whose allocation cannot be freed from here (a llama.cpp buffer a tensor no longer
+// points at). Unlike vm_evict it never decommits, so a later write by the owner stays legal. A no-op
+// on Windows (MEM_DECOMMIT would make that write fault; nothing moves memory away on the host build).
+// The range must be page-aligned by the caller.
+void vm_drop_anon_pages(void * p, size_t sz);
 
 // Tell the kernel a FILE-BACKED range will be touched at random, so a fault brings in the page that
 // faulted and nothing around it. The default is sequential readahead sized in the hundreds of KiB
@@ -158,6 +201,12 @@ bool file_mapped_regions(const char * basename, std::vector<MappedRegion> & out)
 // Physical memory currently allocatable without paging, in bytes. 0 = unknown. Read once at init to
 // size the expert cache to the device (--cache-mb auto); the budget is fixed for the run thereafter.
 uint64_t mem_available_bytes();
+
+// Physical memory this machine has, 0 where it cannot be read. Not a sizing signal on its own -
+// what a process may hold is `mem_available_bytes()` and what it may KEEP is a separate probe - but
+// it bounds both, and it is what a rationale needs to say how much of the machine a plan is asking
+// for. A phone with 12 GB total and 6 GB available is describing two different things.
+uint64_t mem_total_bytes();
 
 // Process-wide compute-decomposition counters, cumulative since process start; the caller deltas
 // them across a single decode to split the per-token "compute" residual into its real causes.

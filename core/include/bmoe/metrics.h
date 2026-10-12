@@ -140,6 +140,17 @@ struct RunSummary {
     double prefill_stall_seconds = 0.0;
     double prefill_mgmt_seconds = 0.0;
     uint64_t prefill_majflt = 0;
+    // Of n_prompt, the tokens whose prefill graph ran on the prefill device (RunConfig::prefill).
+    // Zero when that is off, and for a prompt too short to reach it. What proves the device ran.
+    int prefill_device_tokens = 0;
+    // Graph nodes a device backend computed during this turn's prefill: the proof the device RAN,
+    // where prefill_device_tokens only says the weights were moved there. Zero when that is off.
+    long long prefill_device_nodes = 0;
+    // With streaming, the experts the device prefill read through its arena, and the wall time the
+    // graph waited at a layer for them: the flash half of a device prefill, which the streamer's
+    // own prefill_read_mib/prefill_stall_seconds above do not see. Zero without an arena.
+    double prefill_device_read_mib = 0.0;
+    double prefill_device_stall_seconds = 0.0;
 
     // MoE streaming totals (zero when streaming is off)
     double moe_read_mib = 0.0;
@@ -162,7 +173,8 @@ struct RunSummary {
     double loop_overhead_s_per_token = 0.0;
     double cache_resident_mib = 0.0;
     double cache_budget_mib = 0.0; // the fixed cache budget the run used (explicit, or auto-sized at load)
-    long long cache_resizes = 0;   // runtime budget changes — now only an app's explicit set_cache_budget
+    long long cache_resizes =
+        0; // runtime budget changes: an app's explicit set_cache_budget, or a pin refused part way
     // Cache churn (see IExpertSource::Stats): entries the budget forced out, and reads that went
     // to an entry the cache had held before. Any prefetch that raises the byte count while
     // claiming its reads are useful is doing it here.

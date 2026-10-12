@@ -1,4 +1,5 @@
 #include "bmoe/meitte.h"
+#include "bmoe/params.h"
 #include "bmoe/session.h"
 #include "bmoe/version.h"
 
@@ -8,6 +9,8 @@
 #include <exception>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 struct meitte_session {
     std::unique_ptr<meitte::Session> value;
@@ -119,6 +122,8 @@ meitte_session * meitte_open(const meitte_config * cfg, char * error, size_t cap
         MEITTE_COPY_FIELD(meitte_config, input, cfg, config_size, media_max_bytes);
         MEITTE_COPY_FIELD(meitte_config, input, cfg, config_size, release_mmap);
         MEITTE_COPY_FIELD(meitte_config, input, cfg, config_size, dense_stream);
+        MEITTE_COPY_FIELD(meitte_config, input, cfg, config_size, params);
+        MEITTE_COPY_FIELD(meitte_config, input, cfg, config_size, params_count);
         if (!input.model_path || !input.model_path[0]) throw std::invalid_argument("model path is required");
         // Dense streaming was removed. The fields keep the struct layout; a caller that still asks
         // for the mode gets an error instead of a silent mmap run.
@@ -152,6 +157,15 @@ meitte_session * meitte_open(const meitte_config * cfg, char * error, size_t cap
         rc.spec.source = input.speculation == 1   ? meitte::DraftSource::ngram
                          : input.speculation == 2 ? meitte::DraftSource::mtp
                                                   : meitte::DraftSource::none;
+        if (input.params_count && !input.params) throw std::invalid_argument("params_count without params");
+        for (size_t i = 0; i < input.params_count; ++i) {
+            const std::string item = input.params[i] ? input.params[i] : "";
+            const size_t eq = item.find('=');
+            const meitte::ParamDesc * d = eq == std::string::npos ? nullptr : meitte::find_param(item.substr(0, eq));
+            if (!d) throw std::invalid_argument("unknown engine parameter: " + item);
+            std::string why;
+            if (!d->set(rc, item.substr(eq + 1), why)) throw std::invalid_argument(item + ": " + why);
+        }
         const auto valid = meitte::validate(rc);
         if (!valid) throw std::invalid_argument(valid.error);
         std::string detail;
@@ -239,4 +253,42 @@ const char * meitte_result_reasoning(const meitte_result * r) {
 }
 void meitte_result_free(meitte_result * r) {
     delete r;
+}
+
+const char * meitte_describe_params() {
+    static const std::string json = meitte::params_json(meitte::RunConfig{});
+    return json.c_str();
+}
+
+int meitte_decide(meitte_session * session,
+                  const char * prefix,
+                  const char * suffix,
+                  const char * const * choices,
+                  size_t choice_count,
+                  double * logp,
+                  size_t logp_capacity,
+                  int32_t * best,
+                  char * error,
+                  size_t error_capacity) {
+    if (error && error_capacity) error[0] = '\0';
+    try {
+        if (!session || (choice_count && !choices)) throw std::invalid_argument("invalid session or choices");
+        meitte::DecideRequest req;
+        if (prefix) req.prefix = prefix;
+        if (suffix) req.suffix = suffix;
+        for (size_t i = 0; i < choice_count; ++i)
+            req.choices.emplace_back(choices[i] ? choices[i] : "");
+        const meitte::DecideResult r = session->value->decide(req);
+        if (r.cancelled) return 1;
+        if (!r.ok) throw std::runtime_error(r.error);
+        for (size_t i = 0; logp && i < r.choice_logp.size() && i < logp_capacity; ++i)
+            logp[i] = r.choice_logp[i];
+        if (best) *best = r.best;
+        return 0;
+    } catch (const std::exception & ex) {
+        if (error && error_capacity) std::snprintf(error, error_capacity, "%s", ex.what());
+    } catch (...) {
+        if (error && error_capacity) std::snprintf(error, error_capacity, "%s", "unknown library error");
+    }
+    return -1;
 }

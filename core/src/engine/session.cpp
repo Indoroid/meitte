@@ -10,6 +10,8 @@ Session::Impl::~Impl() {
     // buffers back the rebound expert tensors), then the context (its eval callback points
     // at the hook), then the hook, then unmap the model, then release the backend.
     source.shutdown();
+    // Hands every weight back to its mapping, then frees the device copy: before the model goes.
+    prefill.reset();
     if (smpl) llama_sampler_free(smpl); // independent of ctx/model; free before them
     // The speculative driver holds both contexts and detaches the backend samplers it
     // installed on the draft one, so it goes before either context is freed.
@@ -31,7 +33,7 @@ bool Session::Impl::abort_requested(void * impl) {
 }
 
 void Session::Impl::attach_context(llama_context * c) {
-    llama_set_n_threads(c, cfg.n_threads, cfg.n_threads);
+    llama_set_n_threads(c, cfg.n_threads, cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads);
     llama_set_abort_callback(c, &Impl::abort_requested, this);
 }
 

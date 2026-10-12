@@ -167,6 +167,36 @@ bool parse_session_generate(const json & root, const RunConfig & cfg, SessionCom
     return true;
 }
 
+bool parse_session_decide(const json & root, SessionCommand & out, std::string & error) {
+    for (const char * key : {"prefix", "suffix"}) {
+        if (!root.contains(key)) continue;
+        if (!root[key].is_string()) {
+            error = std::string(key) + " must be a string";
+            return false;
+        }
+        (std::string(key) == "prefix" ? out.prefix : out.suffix) = root[key].get<std::string>();
+    }
+    if (!root.contains("choices") || !root["choices"].is_array() || root["choices"].empty()) {
+        error = "decide requires a non-empty choices array";
+        return false;
+    }
+    for (const json & choice : root["choices"]) {
+        if (!choice.is_string() || choice.get<std::string>().empty()) {
+            error = "each choice must be a non-empty string";
+            return false;
+        }
+        out.choices.push_back(choice.get<std::string>());
+    }
+    if (root.contains("reuse_prefix")) {
+        if (!root["reuse_prefix"].is_boolean()) {
+            error = "reuse_prefix must be a boolean";
+            return false;
+        }
+        out.reuse_prefix = root["reuse_prefix"].get<bool>();
+    }
+    return true;
+}
+
 } // namespace
 
 bool parse_session_command(const std::string & line, const RunConfig & cfg, SessionCommand & out, std::string & error) {
@@ -196,6 +226,10 @@ bool parse_session_command(const std::string & line, const RunConfig & cfg, Sess
         if (cmd == "cancel") {
             out.kind = SessionCommand::kCancel;
             return true;
+        }
+        if (cmd == "decide") {
+            out.kind = SessionCommand::kDecide;
+            return parse_session_decide(root, out, error);
         }
         if (cmd != "generate") {
             error = "unknown command: " + cmd;

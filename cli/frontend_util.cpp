@@ -1,8 +1,13 @@
 #include "frontend_util.h"
 
+#include "bmoe/auto_plan.h"
+#include "bmoe/params.h"
+#include "bmoe/probe.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 
@@ -91,6 +96,187 @@ void emit_progress_line(const TokenMetrics & m, ProgressDelta & st) {
     st.reasoning = m.reasoning;
     st.text = m.text;
     std::fflush(stdout);
+}
+
+std::vector<std::string> pinned_param_keys(const std::set<std::string> & typed_flags) {
+    std::vector<std::string> keys;
+    for (const ParamDesc & d : params()) {
+        bool typed = (!d.flag.empty() && typed_flags.count(d.flag)) ||
+                     (!d.short_flag.empty() && typed_flags.count(d.short_flag));
+        for (const ParamSwitch & sw : d.switches)
+            typed = typed || typed_flags.count(sw.flag);
+        if (typed) keys.push_back(d.key);
+    }
+    return keys;
+}
+
+std::string param_key_for_env(const std::string & env) {
+    static const std::map<std::string, std::string> keys = {
+        {"BMOE_CACHE_MB", "cache-mb"},
+        {"BMOE_IO_THREADS", "io-threads"},
+        {"BMOE_OVERLAP", "overlap"},
+        {"BMOE_PREFETCH", "prefetch"},
+        {"BMOE_N_EXPERT_USED", "n-expert-used"},
+        {"BMOE_PREDICT_LOG", "predict-log"},
+        {"BMOE_PREDICT_PREFETCH", "predict-prefetch"},
+    };
+    auto it = keys.find(env);
+    return it == keys.end() ? std::string() : it->second;
+}
+
+bool parse_planner_flag(const std::string & arg,
+                        PlannerFlags & f,
+                        const std::function<const char *(const char *)> & next) {
+    if (arg == "--describe-params")
+        f.describe_params = true;
+    else if (arg == "--show-config")
+        f.show_config = true;
+    else if (arg == "--auto" || arg == "--plan-run")
+        f.auto_plan = true;
+    else if (arg == "--plan" || arg == "--plan-only")
+        f.auto_plan = f.plan_explain = f.plan_only = true;
+    else if (arg == "--probe") {
+        f.auto_plan = f.plan_explain = f.plan_only = true;
+        f.probe_io = f.probe_mem = true;
+    } else if (arg == "--plan-explain")
+        f.plan_explain = true;
+    else if (arg == "--probe-io")
+        f.auto_plan = f.probe_io = true;
+    else if (arg == "--no-probe-io")
+        f.probe_io = false;
+    else if (arg == "--probe-device")
+        f.probe_device = next("--probe-device");
+    else if (arg == "--no-isolated-probes")
+        f.isolated_probes = false;
+    else if (arg == "--probe-mem")
+        f.auto_plan = f.probe_mem = true;
+    else
+        return false;
+    return true;
+}
+
+void print_planner_usage() {
+    std::printf("\n  Hardware planner (docs/hardware-planning.md):\n"
+                "      --auto              measure the machine and the model, plan the knobs you did not set, run\n"
+                "      --plan              print the plan and the flags that reproduce it, then exit\n"
+                "      --plan-explain      with --auto: print the plan, then run it\n"
+                "      --probe             --plan, plus the storage and memory probes\n"
+                "      --no-probe-io       plan without the storage read probe (touches no drive)\n"
+                "      --probe-mem         hold memory until the kernel takes some back (intrusive)\n"
+                "      --no-isolated-probes  probe compute devices in this process instead of a child each\n"
+                "      --describe-params   print every engine parameter as JSON and exit\n"
+                "      --show-config       print the resolved configuration as JSON and exit\n"
+                "\n  Prefill device, decisions and placement (from the engine's parameter table):\n");
+    static const std::set<std::string> keys = {"threads-batch",
+                                               "gpu-layers",
+                                               "devices",
+                                               "dense-on-device",
+                                               "tensor-overrides",
+                                               "prefill-device",
+                                               "prefill-best-effort",
+                                               "prefill-min-tokens",
+                                               "prefill-slots",
+                                               "prefill-slots-on-demand",
+                                               "prefill-loaders",
+                                               "prefill-routed",
+                                               "prefill-routed-full",
+                                               "decide",
+                                               "decide-prefix-cache",
+                                               "decide-probe",
+                                               "cache-pin",
+                                               "cache-pin-fit"};
+    for (const ParamDesc & d : params()) {
+        if (!keys.count(d.key)) continue;
+        std::string spelled =
+            d.flag.empty() ? std::string() : d.flag + (d.value_hint.empty() ? "" : " " + d.value_hint);
+        for (const ParamSwitch & sw : d.switches)
+            if (!sw.deprecated) spelled += (spelled.empty() ? "" : ", ") + sw.flag;
+        std::printf("      %-26s %s\n", spelled.c_str(), d.label.c_str());
+    }
+}
+
+int apply_table_flag(RunConfig & cfg, int argc, char ** argv, int & i, const char * who) {
+    const FlagResult r = apply_flag(cfg, argv[i], i + 1 < argc ? argv[i + 1] : nullptr);
+    if (!r.matched) {
+        std::fprintf(stderr, "%s: unknown arg: %s\n", who, argv[i]);
+        return 1;
+    }
+    if (!r.error.empty()) {
+        std::fprintf(stderr, "%s: %s: %s\n", who, argv[i], r.error.c_str());
+        return 2;
+    }
+    if (r.consumed_value) ++i;
+    return 0;
+}
+
+int run_planner_steps(RunConfig & cfg,
+                      const PlannerFlags & f,
+                      const std::set<std::string> & typed_flags,
+                      const char * self_name,
+                      double & predicted_s_per_token) {
+    predicted_s_per_token = 0.0;
+    if (f.describe_params) {
+        std::printf("%s\n", params_json(cfg).c_str());
+        return 0;
+    }
+    // The child of an isolated device probe: one device, its facts on one line, nothing else. If the
+    // driver ends this process, or it never returns, that is the parent's answer about the device.
+    if (!f.probe_device.empty()) {
+        std::string facts;
+        if (!probe_device_for_parent(cfg.model_path.c_str(), f.probe_device, facts)) {
+            std::fprintf(stderr, "%s: no such device to probe: %s\n", self_name, f.probe_device.c_str());
+            return 3;
+        }
+        std::printf("%s %s\n", device_facts_marker, facts.c_str());
+        std::fflush(stdout);
+        return 0;
+    }
+    // The planner runs after the flags, the env overrides and the frontend's own defaults, so
+    // anything the caller expressed either way is a pin it may not touch.
+    const bool plan = f.auto_plan || typed_flags.count("--dense-on-device");
+    if (plan && !cfg.model_path.empty()) {
+        AutoPlanOptions options;
+        options.pinned = pinned_param_keys(typed_flags);
+        for (const char * env : {"BMOE_CACHE_MB", "BMOE_IO_THREADS", "BMOE_OVERLAP", "BMOE_PREFETCH",
+                                 "BMOE_N_EXPERT_USED", "BMOE_PREDICT_LOG", "BMOE_PREDICT_PREFETCH"})
+            if (const char * v = std::getenv(env); v && *v) options.pinned.push_back(param_key_for_env(env));
+        options.probe_io = f.probe_io;
+        options.probe_mem = f.probe_mem;
+        if (f.isolated_probes) {
+            const std::string model = cfg.model_path;
+            // Generous on purpose: a device is given time to load the tensors it measures on.
+            options.device_runner = self_process_runner(
+                [model](const std::string & dev) {
+                    return std::vector<std::string>{"-m", model, "--probe-device", dev};
+                },
+                /*timeout_seconds*/ 120.0);
+        }
+        const AutoPlanResult r = auto_plan(cfg, options);
+        if (!r.ok) {
+            std::fprintf(stderr, "%s: plan failed: %s\n", self_name, r.error.c_str());
+            return 2;
+        }
+        cfg = r.plan.config;
+        predicted_s_per_token = r.predicted_s_per_token;
+        if (f.plan_explain) {
+            std::fputs(r.report.c_str(), stderr);
+            // The line that reproduces this plan by hand, printed last so it stays on screen.
+            std::fprintf(stderr, "plan: reproduce with\n  %s -m %s %s\n", self_name, cfg.model_path.c_str(),
+                         r.plan.to_flags().c_str());
+        }
+        if (f.plan_only) return 0;
+    }
+    // The configuration exactly as a run would get it, and whether validate() accepts it.
+    if (f.show_config) {
+        const ValidationResult v = validate(cfg);
+        std::string args;
+        for (const std::string & arg : to_args(cfg))
+            args += (args.empty() ? "\"" : ",\"") + json_escape(arg) + "\"";
+        std::printf("{\"config\":%s,\"args\":[%s],\"valid\":%s,\"error\":\"%s\"}\n", config_json(cfg).c_str(),
+                    args.c_str(), v.ok ? "true" : "false", json_escape(v.error).c_str());
+        return v.ok ? 0 : 1;
+    }
+    return -1;
 }
 
 } // namespace meitte::frontend

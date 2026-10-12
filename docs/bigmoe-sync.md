@@ -40,3 +40,35 @@ The upstream README wording change that removes a blanket "not as a fork" claim 
 Meitte's wording: Meitte builds on llama.cpp and documents its optional overlap fork separately.
 BigMoeOnEdge's release changelog is represented by this ledger because `CHANGELOG.md` was already
 deleted in the Meitte working tree and that user-owned deletion was preserved.
+
+## BigMoeOnEdge 0.25–0.28 and the planner branches
+
+The second port takes BigMoeOnEdge `main` at `374f562` (0.28.0, 2026-09-29) plus the open branches
+that build on it: `feat/prefill-plan`, `feat/prefill-slots`, `feat/prefill-memory-turns`,
+`feat/isolated-probes` and `feat/auto-planner` (tips `4271e3b`, `9b00258`, `c018e21`, `fb9737c`,
+`772b190`, all based on `a63af95`). The histories are unrelated, so this is a three-way file merge
+against `v0.24.0`, not a git merge.
+
+- **Taken whole:** the decide policy (`core/src/engine/decide/`), the prefill device
+  (`prefill_device`, `prefill_path`, `moe/device_arena`), the decide probe, the parameter table
+  (`params.h`, `params.cpp`), and the planner (`core/src/plan/`, its profile, placement, plan and
+  probe headers). The namespace is `meitte`. The planner, parameter, decide and config tests come
+  with them.
+- **Merged into Meitte's own units:** upstream's monolithic `session.cpp` hunks went to
+  `session_impl.h` (the prefill path and the decide state), `session_open.cpp` (device selection,
+  `n_gpu_layers`, lazy mode, planner overrides appended after `--override-tensor`, the prefill path
+  open and best-effort fallback), `session_generate.cpp` (placed prefill pieces and device
+  telemetry), `session_perplexity.cpp` (placed scoring) and the new `session_decide.cpp`. Every full
+  clear of the target context goes through `Impl::clear_memory()`. `prefill_support.h` forwards to
+  Meitte's `llama_glue.h` and `run_tally.h` instead of duplicating them.
+- **Frontends:** the planner's probe order moved from upstream's `bmoe-cli` into the core
+  (`bmoe/auto_plan.h`), and the planner and table flags into `cli/frontend_util`, so `meitte-cli` and
+  `meitte-server` parse and plan identically. Both fall back to the parameter table for flags they do
+  not parse by hand.
+- **Not taken:** `feat/ios-harness` (iOS is out of scope), upstream's `bmoe-server` binary (its HTTP
+  surface goes into `meitte-server` instead), the macOS Metal build default, and the build-output
+  move to `build/bin`. `perf/odirect-zero-copy` predates 0.24 and is ported separately.
+- **Meitte-only refusals:** the prefill device is refused with multimodal input and with dynamic
+  context policies until each has a gate (`docs/limitations.md`).
+- **Gate numbering:** upstream's G16–G18 are the prefill device and decide. Meitte's earlier
+  `--dense-weights ahwb` gate is now G19.

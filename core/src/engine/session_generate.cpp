@@ -50,6 +50,11 @@ RunResult Session::generate(const GenerateRequest & req,
         return res;
     };
     im.cancel_requested.store(false, std::memory_order_release);
+    // A kept decide() prefix is worth its RAM only while decisions follow one another. Back in a
+    // conversation it would sit, until close, in the memory the expert cache lives in, so it goes
+    // now; the next decide() builds a fresh one.
+    im.decide_cache.reset();
+    im.decide_cache_chosen = false;
     if (req.n_predict <= 0 || req.n_predict > std::numeric_limits<int>::max() - 8)
         return fail("n_predict must be positive and leave room for context accounting");
 
@@ -392,7 +397,7 @@ RunResult Session::generate(const GenerateRequest & req,
             }
             rollback_history();
         } else {
-            llama_memory_clear(llama_get_memory(ctx), true);
+            im.clear_memory(ctx);
             if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
         }
         if (has_media) {
@@ -417,6 +422,13 @@ RunResult Session::generate(const GenerateRequest & req,
     prefill_tally.begin(moe.enabled, im.source);
     const uint64_t prefill_faults0 = pio::major_faults();
     const auto t_prefill0 = Clock::now();
+    // Every exit from the prefill below (errors and cancellation included) puts the weights back on
+    // the host before the next graph.
+    Impl::PlacementGuard placement_guard{im};
+    int prefill_device_tokens = 0;
+    const uint64_t arena_read0 = im.prefill ? im.prefill->arena_read_bytes() : 0;
+    const double arena_stall0 = im.prefill ? im.prefill->arena_stall_seconds() : 0.0;
+    const long long device_nodes0 = im.hook->device_nodes();
     // Two predicates, deliberately distinct. spec_on is "the verify loop runs" — a wide batch, an
     // accept pass, a rollback — and both sources need all of it. mtp_on is "the draft comes from the
     // head", which is the only thing that needs the second context and llama.cpp's `common`
@@ -491,8 +503,15 @@ RunResult Session::generate(const GenerateRequest & req,
             return fail("multimodal KV continuation cannot change the original media transcript; start a new chat with "
                         "clear_kv=true");
         }
-        for (int i = (int) n_common; i < n_prompt; i += im.cfg.n_batch) {
-            const int chunk = std::min(im.cfg.n_batch, n_prompt - i);
+        // With a prefill device the prompt goes in one ubatch per decode, so each graph's width is one
+        // we chose and can place: wide pieces on the device, a narrow tail on the CPU. Left to
+        // llama_decode, a batch would be split into ubatches whose last one could be one token wide,
+        // the shape of the decode graph that follows, which llama.cpp would then reuse without
+        // scheduling it again.
+        const int pf_step = im.prefill ? prefill_piece(im.cfg) : im.cfg.n_batch;
+        for (int i = (int) n_common; i < n_prompt; i += pf_step) {
+            const int chunk = std::min(pf_step, n_prompt - i);
+            if (im.prefill && im.place_prefill(chunk >= im.cfg.prefill.min_tokens)) prefill_device_tokens += chunk;
             llama_batch pf;
             if (mtp_on) {
                 batch_fill(im.mtp_batch, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ false);
@@ -501,7 +520,7 @@ RunResult Session::generate(const GenerateRequest & req,
                 pf = llama_batch_get_one(tokens.data() + i, chunk);
             }
             im.trace_begin(i, chunk, /*phase*/ 0);
-            if (llama_decode(ctx, pf) != 0) {
+            if (im.decode_placed(ctx, pf) != 0) {
                 if (im.cancel_requested.load(std::memory_order_relaxed)) {
                     rollback_turn();
                     res.ok = true;
@@ -517,12 +536,14 @@ RunResult Session::generate(const GenerateRequest & req,
             if (mtp_on && !common_speculative_process(im.mtp.get(), pf))
                 return abort_turn("MTP draft context failed to process the prefill batch");
         }
+        im.place_prefill(false); // decode reads the host bindings
         if (chat_on)
             for (int i = (int) n_common; i < n_prompt; ++i)
                 im.kv_tokens.push_back(tokens[i]);
         if (mtp_on) common_speculative_begin(im.mtp.get(), /*seq_id*/ 0, tokens);
         prompt_n_past = media_kv_continuation ? media_reuse_n_past + (llama_pos) (n_prompt - n_common) : n_prompt;
     }
+    const long long prefill_device_nodes = im.hook->device_nodes() - device_nodes0;
     const double prefill_seconds = secs(t_prefill0, Clock::now());
     // Prefill attribution, closed here (the begin() snapshot sits above the chunk loop): deltas
     // of the cumulative counters across the prompt, the quantities the decode phase reports per
@@ -949,6 +970,12 @@ RunResult Session::generate(const GenerateRequest & req,
     s.prefill_seconds = prefill_seconds;
     s.media_prepare_seconds = media_prepare_seconds;
     s.media_projector_seconds = media_projector_seconds;
+    s.prefill_device_tokens = prefill_device_tokens;
+    s.prefill_device_nodes = prefill_device_nodes;
+    if (im.prefill) {
+        s.prefill_device_read_mib = (double) (im.prefill->arena_read_bytes() - arena_read0) / (1024.0 * 1024.0);
+        s.prefill_device_stall_seconds = im.prefill->arena_stall_seconds() - arena_stall0;
+    }
     s.prefill_cpu_seconds = prefill_tally.cpu_seconds;
     s.prefill_read_mib = prefill_tally.read_mib;
     s.prefill_io_seconds = prefill_tally.io_seconds;
@@ -1054,7 +1081,7 @@ RunResult Session::generate(const GenerateRequest & req,
 
     if (res.context_exhausted) {
         // A failed turn must not leave a compacted transcript or a partly rebuilt KV behind.
-        llama_memory_clear(llama_get_memory(ctx), true);
+        im.clear_memory(ctx);
         if (im.ctx_dft) llama_memory_clear(llama_get_memory(im.ctx_dft.get()), true);
         im.kv_tokens.clear();
         im.kv_n_past = 0;

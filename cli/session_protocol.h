@@ -11,7 +11,7 @@
 namespace meitte {
 
 struct SessionCommand {
-    enum Kind { kGenerate, kError, kClose, kCancel } kind = kError;
+    enum Kind { kGenerate, kDecide, kError, kClose, kCancel } kind = kError;
     std::string prompt;
     std::vector<ChatMessage> messages;
     int id = 0;
@@ -23,6 +23,11 @@ struct SessionCommand {
     // Unspecified follows the session's default. This lets --kv-preserve continue after the
     // first turn while retaining an explicit {"clear_kv":true} reset escape hatch.
     std::optional<bool> clear_kv;
+    // decide only (bmoe/decide.h)
+    std::string prefix;
+    std::string suffix;
+    std::vector<std::string> choices;
+    bool reuse_prefix = true;
 };
 
 // Parse one complete JSON line from the interactive-session protocol. Keeping the parser separate

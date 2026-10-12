@@ -108,7 +108,7 @@ bool Session::Impl::truncate_kv(llama_pos keep_pos, size_t keep_tokens, bool in_
         kv_last_generation_start = std::min(kv_last_generation_start, kv_tokens.size());
         return true;
     }
-    llama_memory_clear(llama_get_memory(ctx.get()), true);
+    clear_memory(ctx.get());
     if (ctx_dft) llama_memory_clear(llama_get_memory(ctx_dft.get()), true);
     kv_tokens.clear();
     kv_n_past = 0;
@@ -117,7 +117,7 @@ bool Session::Impl::truncate_kv(llama_pos keep_pos, size_t keep_tokens, bool in_
 }
 
 void Session::Impl::reset_conversation() {
-    llama_memory_clear(llama_get_memory(ctx.get()), true);
+    clear_memory(ctx.get());
     // The draft context tracks the target's positions and must be dropped with it, or the first
     // draft of the new conversation is conditioned on the previous one.
     if (ctx_dft) llama_memory_clear(llama_get_memory(ctx_dft.get()), true);

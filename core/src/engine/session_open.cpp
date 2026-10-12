@@ -8,6 +8,7 @@
 #include "bmoe/version.h"
 #include "../io/platform_io.h"
 
+#include "ggml-backend.h"
 #include "ggml.h"
 
 #include "common.h"
@@ -43,6 +44,15 @@ std::string check_session_config(const SessionConfig & c) {
         (c.context.max_ctx && c.context.max_ctx < c.n_ctx) ||
         (c.context.grow != ContextMode::Off && !c.context.max_ctx))
         return "invalid dynamic context bounds: require dyn-min-ctx <= ctx-size <= dyn-max-ctx";
+    // Session::open callers that skip validate() (the server, the C ABI) get the same refusals for
+    // the paths that decode outside the placed prefill. See validate() in config.cpp.
+    if (c.prefill.enabled() && c.multimodal.enabled())
+        return "prefill.device does not combine with multimodal input yet";
+    if (c.prefill.enabled() && (c.context.grow != ContextMode::Off || c.context.summarize != ContextMode::Off ||
+                                c.context.trim != ContextMode::Off))
+        return "prefill.device does not combine with context growth, summarization or trimming yet";
+    if (c.prefill.enabled() && c.spec.enabled()) return "prefill.device does not combine with speculative decoding";
+    if (c.prefill.enabled() && c.moe.row_stream) return "prefill.device does not combine with moe.row_stream";
     return {};
 }
 
@@ -221,20 +231,75 @@ const char * dense_weights_name(DenseWeightsMode mode) {
 
 bool Session::Impl::load_model(LazyGgufMeta & meta, std::string & error) {
     // Load with the layout the streamer requires: file-backed mmap, no repack (a repacked
-    // q4_K buffer would break the rebind), experts on CPU.
+    // q4_K buffer would break the rebind), and every expert the streamer serves in host memory.
+    //
+    // Layers on devices are the planner's decision (llama.cpp's capacity fitter), carried in as
+    // n_gpu_layers plus the override patterns it wrote. With nothing planned everything stays on the
+    // host. Every planner pattern is routed to the CPU buffer type: that is what the fitter itself
+    // does for the experts it leaves on the host, and it is the one placement the streamer can
+    // serve, because it rebinds `data` onto bytes it read itself and only a host address can be
+    // rebound. See docs/hardware-planning.md.
     llama_model_params mparams = llama_model_default_params();
+    // A device that is not used must not be registered with the scheduler. Left registered, the
+    // scheduler gives it every node it can execute, and each one is a boundary the graph crosses
+    // twice. Unless told otherwise, the placement decides: a layer on a device means the devices
+    // are wanted, none means they are not. A build that carries a GPU backend then runs a host-only
+    // plan exactly as a build without it.
+    const bool cpu_only =
+        cfg.device_use == DeviceUse::CpuOnly || (cfg.device_use == DeviceUse::Auto && cfg.n_gpu_layers == 0);
+    ggml_backend_dev_t only_cpu[2] = {nullptr, nullptr};
+    if (cpu_only) {
+        only_cpu[0] = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (only_cpu[0]) mparams.devices = only_cpu;
+    }
     mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
     mparams.use_extra_bufts = false;
-    mparams.n_gpu_layers = 0;
+    mparams.n_gpu_layers = cfg.n_gpu_layers;
+    // llama.cpp reads the rows of arch-marked tensors on demand, and by default it does so for any
+    // marked tensor over 4 GiB. Those are the per-layer embedding tables that --row-stream gathers
+    // rows from, so the two mechanisms would page the same bytes by two routes. Only one may: ours
+    // when it is asked for, llama.cpp's otherwise.
+    mparams.lazy_mode = cfg.moe.row_stream ? LLAMA_LAZY_MODE_OFF : LLAMA_LAZY_MODE_AUTO;
     // llama.cpp skips the MTP (nextn) tensors unless asked, and building the draft context without
     // them fails an assert inside llama.cpp. Only an MTP session pays for loading them.
     mparams.load_mtp = cfg.spec.is_mtp();
 
     // These are placement requests interpreted by llama.cpp while it loads a fully resident
-    // model. The strings belong to cfg and the C array stays alive through the load call.
+    // model. The strings belong to cfg and the C array stays alive through the load call. The
+    // planner's patterns follow the caller's, so an explicit --override-tensor wins a tie.
     std::vector<llama_model_tensor_buft_override> tensor_buft_overrides;
     if (!resolve_tensor_buffer_overrides(cfg.tensor_buffer_overrides, tensor_buft_overrides, error)) return false;
+    if (!cfg.buft_overrides.empty()) {
+        if (!tensor_buft_overrides.empty()) tensor_buft_overrides.pop_back(); // the terminator
+        for (const std::string & pattern : cfg.buft_overrides)
+            tensor_buft_overrides.push_back({pattern.c_str(), ggml_backend_cpu_buffer_type()});
+        tensor_buft_overrides.push_back({nullptr, nullptr});
+    }
     if (!tensor_buft_overrides.empty()) mparams.tensor_buft_overrides = tensor_buft_overrides.data();
+
+    // The prefill device joins the scheduler as the model's only non-CPU device, with no layer
+    // assigned to it: every weight still loads from the mmap, and the device runs nothing until
+    // PrefillPath moves the layer weights onto it for a wide graph. A device that is missing leaves
+    // the whole run on the CPU, exactly as without the option; the load does not fail over it.
+    std::vector<ggml_backend_dev_t> auto_devices;
+    if (cfg.prefill.enabled()) {
+        std::string derr;
+        if (ggml_backend_dev_t dev = PrefillPath::find_device(cfg.prefill.device, derr)) {
+            prefill = std::make_unique<PrefillPath>(dev);
+            mparams.devices = prefill->model_devices();
+            // With a device listed, llama.cpp would put CPU weights in the device's host buffer
+            // type, which is an allocation and a copy, not the file mapping. The mapping is
+            // load-bearing.
+            mparams.no_host = true;
+        } else {
+            std::fprintf(stderr, "bmoe: %s; prefill stays on the CPU\n", derr.c_str());
+            cfg.prefill.device.clear();
+        }
+    }
+    if (!prefill && !cpu_only) {
+        if (const ggml_backend_dev_t * devs = PrefillPath::devices_without_prefill(auto_devices))
+            mparams.devices = const_cast<ggml_backend_dev_t *>(devs);
+    }
 
     // Optional active-expert override: reduce the model's top-k routing (e.g. 8 -> 6) to cut
     // per-token compute and — under streaming — flash I/O, at a quality cost. Applied purely
@@ -312,15 +377,25 @@ bool Session::Impl::init_chat_templates(std::string & error) {
 
 bool Session::Impl::create_contexts(bool install_eval_callback, std::string & error) {
     llama_context_params cparams = make_context_params(cfg);
-    if (install_eval_callback) {
+    // The prefill device needs the callback once, for the capture that finds the layer weights.
+    if (install_eval_callback || prefill) {
         cparams.cb_eval = &RouterHook::c_eval;
         cparams.cb_eval_user_data = hook.get();
+    }
+    // Placement is decided here, by moving weights; a backend's own offload heuristic would move
+    // ops of CPU-resident weights to the device on its own (GPU backends do for wide batches).
+    if (prefill) {
+        cparams.op_offload = false;
+        cparams.n_outputs_max = (uint32_t) PrefillDeviceConfig::max_outputs;
     }
     context_params = cparams;
 
     ctx.reset(llama_init_from_model(model.get(), cparams));
     if (!ctx) return fail(error, context_failure("context", cfg));
-    llama_set_n_threads(ctx.get(), cfg.n_threads, cfg.n_threads);
+    // Decode and prefill get their own counts: prefill is compute-bound and scales with cores, a
+    // streamed decode waits on flash. 0 means "the same".
+    const int n_threads_batch = cfg.n_threads_batch > 0 ? cfg.n_threads_batch : cfg.n_threads;
+    llama_set_n_threads(ctx.get(), cfg.n_threads, n_threads_batch);
 
     if (cfg.multimodal.enabled() && !mtmd.init(cfg.multimodal, model.get(), cfg.n_threads, error)) return false;
 
@@ -452,6 +527,8 @@ bool Session::Impl::bind_expert_stream(const MoeRecipe & recipe,
         source.set_row_tensors(std::move(rows), row_budget);
     }
 
+    if (prefill) prefill->keep_stream_layout(layers, offs.shard_paths);
+    if (prefill && cfg.prefill.slots_on_demand) prefill->share_memory_with(&source);
     std::string source_error;
     if (!source.init(offs.shard_paths, n_expert, std::move(layers), cfg.moe, source_error))
         return fail(error, "expert stream source init failed: " + source_error);
@@ -495,7 +572,7 @@ bool Session::Impl::bind_expert_stream(const MoeRecipe & recipe,
 #endif
     }
 
-    llama_memory_clear(llama_get_memory(ctx.get()), true); // discard warm-up KV
+    clear_memory(ctx.get()); // discard warm-up KV
     if (ctx_dft) llama_memory_clear(llama_get_memory(ctx_dft.get()), true);
     return true;
 }
@@ -720,6 +797,16 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
     im.hook->set_predict_log(cfg.moe.predict_log);
     im.hook->set_predict_prefetch(cfg.moe.predict_prefetch, cfg.moe.predict_spec_max);
     im.hook->set_route_ahead(cfg.moe.route_ahead);
+    if (cfg.decide.enabled && !cfg.decide.probe_path.empty()) {
+        const GgufModelInfo & mi = meta.info();
+        im.decide_probe = std::make_unique<DecideProbe>(cfg.model_path, im.n_layer, mi.ok ? mi.n_expert : 0,
+                                                        llama_model_n_embd(im.model.get()), cfg.decide.probe_path);
+        if (!im.decide_probe->ok()) {
+            error = "decide probe: " + im.decide_probe->error();
+            return nullptr;
+        }
+        im.hook->set_probe(im.decide_probe.get());
+    }
 
     // The streamer needs the callback to see routing; the compute trace needs it to time nodes.
     // Installing it for the trace alone is what lets a NON-streamed run be measured — the dense
@@ -727,8 +814,28 @@ std::unique_ptr<Session> Session::open(const SessionConfig & input_cfg,
     if (!im.create_contexts(cfg.moe.enabled || compute_trace, error)) return nullptr;
     if (cfg.moe.enabled && !im.bind_expert_stream(recipe, n_layer_streamed, meta, route_trace, io_trace, error))
         return nullptr;
+    if (im.prefill) {
+        std::string perr;
+        if (!im.prefill->open(im.ctx.get(), im.vocab, *im.hook, im.cfg.prefill, cfg.moe, n_layer_streamed, perr)) {
+            if (!cfg.prefill.best_effort) {
+                error = perr;
+                return nullptr;
+            }
+            // Asked for as a speed-up, not as a condition: undo it and run on the CPU. Destroying
+            // the path hands every weight and the model state back to where the load put them, so
+            // what is left is the session a run without the option would have had.
+            std::fprintf(stderr, "bmoe: %s; prefill stays on the CPU\n", perr.c_str());
+            im.hook->set_device_arena(nullptr);
+            im.hook->count_device_nodes(false);
+            im.prefill.reset();
+            im.cfg.prefill.device.clear();
+            im.clear_memory(im.ctx.get());
+        }
+    }
     im.attach_decode_traces(compute_trace);
     im.build_run_info(meta);
+    // The pinned cache may not shrink below one token's worst-case cycle (--cache-pin-fit).
+    if (cfg.moe.enabled) im.source.set_pin_floor(im.source.worst_cycle_bytes(im.n_expert_used));
     im.warn_about_load();
 
     im.load_seconds = secs(t_load0, Clock::now());

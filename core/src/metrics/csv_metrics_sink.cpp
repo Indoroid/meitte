@@ -94,6 +94,7 @@ public:
             "media_prepare_s=%.3f media_projector_s=%.3f "
             "prefill_cpu_s=%.3f prefill_read_mib=%.1f prefill_io_s=%.3f "
             "prefill_stall_s=%.3f prefill_mgmt_s=%.3f "
+            "prefill_dev_tokens=%d prefill_dev_nodes=%lld prefill_dev_read_mib=%.1f prefill_dev_stall_s=%.3f "
             "row_table_MiB=%.1f row_resident_MiB=%.1f row_rows=%lld row_reads=%lld "
             "row_read_MiB=%.1f row_evictions=%lld row_io_errors=%lld "
             "prefill_majflt=%llu\n",
@@ -111,7 +112,8 @@ public:
             s.n_generated ? s.route_ahead_wd_ns / 1e6 / s.n_generated : 0.0, s.moe_drain_s_per_token,
             s.moe_adopt_s_per_token, s.cache_evictions, s.cache_rereads, s.media_prepare_seconds,
             s.media_projector_seconds, s.prefill_cpu_seconds, s.prefill_read_mib, s.prefill_io_seconds,
-            s.prefill_stall_seconds, s.prefill_mgmt_seconds, s.row_table_mib, s.row_resident_mib, s.row_rows,
+            s.prefill_stall_seconds, s.prefill_mgmt_seconds, s.prefill_device_tokens, s.prefill_device_nodes,
+            s.prefill_device_read_mib, s.prefill_device_stall_seconds, s.row_table_mib, s.row_resident_mib, s.row_rows,
             s.row_slab_reads, s.row_read_mib, s.row_evictions, s.row_io_errors, (unsigned long long) s.prefill_majflt);
         std::fflush(f_);
     }

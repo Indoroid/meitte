@@ -2,6 +2,7 @@
 // warm expert cache with generate(), so a routing policy is measured exactly as generation runs it.
 #include "session_impl.h"
 #include "llama_glue.h"
+#include "logits.h"
 
 #include <algorithm>
 #include <cmath>
@@ -58,7 +59,7 @@ PplResult Session::perplexity(const PplRequest & req) {
             r.error = "warm-up decode failed";
             return r;
         }
-        llama_memory_clear(llama_get_memory(ctx), true);
+        im.clear_memory(ctx);
     }
     const RoutingCounters routing0 = RoutingCounters::of(*im.hook);
 
@@ -112,11 +113,19 @@ PplResult Session::perplexity(const PplRequest & req) {
             if (!score(0, pos)) return r;
         }
     } else {
-        for (int i = 0; i < n; i += im.cfg.n_batch) {
-            const int chunk = std::min(im.cfg.n_batch, n - i);
+        // Same placement rule as generate()'s prefill, so a scored text gets exactly the numerics a
+        // prompt gets: wide pieces on the prefill device, a narrow tail on the CPU. Every row here
+        // wants its logits, so a piece is also capped by the output rows the context reserved
+        // (PrefillDeviceConfig::max_outputs).
+        const int step =
+            im.prefill ? std::min(prefill_piece(im.cfg), PrefillDeviceConfig::max_outputs) : im.cfg.n_batch;
+        Impl::PlacementGuard placement_guard{im};
+        for (int i = 0; i < n; i += step) {
+            const int chunk = std::min(step, n - i);
+            im.place_prefill(im.prefill && chunk >= im.cfg.prefill.min_tokens);
             batch_fill(b, tokens.data() + i, chunk, /*pos0*/ i, /*all_logits*/ true);
             im.hook->set_batch_phase(req.as_decode ? 1 : 0);
-            if (llama_decode(ctx, b) != 0) {
+            if (im.decode_placed(ctx, b) != 0) {
                 r.error = "decode failed at position " + std::to_string(i);
                 return r;
             }
@@ -136,15 +145,16 @@ PplResult Session::perplexity(const PplRequest & req) {
             r.error = "no logits after the text";
             return r;
         }
-        const LogSoftmax norm(lg, im.n_vocab);
-        const double lse = (double) norm.max + norm.log_sum;
+        // The same normalisation decide() reads its choices with (logits.h), so the two agree bit for
+        // bit on the same distribution (gate G18c).
+        const detail::LogNorm z = detail::log_norm(lg, im.n_vocab);
         for (const std::string & c : req.choices) {
             std::vector<llama_token> ct;
             if (tokenize(im.vocab, c, /*add_special*/ false, /*parse_special*/ false, ct) < 1) {
                 r.error = "choice '" + c + "' does not tokenize";
                 return r;
             }
-            r.choice_logp.push_back((double) lg[ct[0]] - lse);
+            r.choice_logp.push_back(z.logp(lg[ct[0]]));
         }
     }
     if (scored == 0 && req.choices.empty()) {

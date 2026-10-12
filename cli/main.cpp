@@ -7,7 +7,9 @@
 //
 // Environment variables are read ONLY here, as overrides for the matching flags, so the
 // engine stays env-free. The flag always wins over the env value.
+#include "bmoe/auto_plan.h"
 #include "bmoe/config.h"
+#include "bmoe/params.h"
 #include "bmoe/runtime.h"
 #include "bmoe/session.h"
 #include "bmoe/recipe.h"
@@ -21,6 +23,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <cmath>
 #include <cctype>
 #include <condition_variable>
 #include <cstdio>
@@ -73,6 +76,47 @@ struct SessionLoopState {
     std::deque<SessionCmd> queue;
     std::atomic<bool> stop{false};
 };
+
+// Answer one decide request with a BMOE_DECIDE line, or a BMOE_ERROR one. Returns false when the
+// session cannot go on (DecideResult::fatal).
+static bool emit_decide(Session & session, const SessionCmd & cmd) {
+    DecideRequest req;
+    req.prefix = cmd.prefix;
+    req.suffix = cmd.suffix;
+    req.choices = cmd.choices;
+    req.reuse_prefix = cmd.reuse_prefix;
+    const DecideResult r = session.decide(req);
+    if (!r.ok && !r.cancelled) {
+        std::printf("BMOE_ERROR {\"id\":%d,\"fatal\":%s,\"msg\":\"%s\"}\n", cmd.id, r.fatal ? "true" : "false",
+                    json_escape(r.error).c_str());
+        std::fflush(stdout);
+        return !r.fatal;
+    }
+    std::string logp = "[";
+    for (size_t i = 0; i < r.choice_logp.size(); ++i) {
+        char buf[32];
+        // A choice the model gives no mass to is -inf, which JSON cannot carry: send null.
+        if (std::isfinite(r.choice_logp[i]))
+            std::snprintf(buf, sizeof buf, "%s%.6f", i ? "," : "", r.choice_logp[i]);
+        else
+            std::snprintf(buf, sizeof buf, "%snull", i ? "," : "");
+        logp += buf;
+    }
+    logp += "]";
+    const PrefillStats & p = r.prefill;
+    std::printf("BMOE_DECIDE {\"id\":%d,\"cancelled\":%s,\"best\":%d,\"choice_logp\":%s,\"n_tokens\":%d,"
+                "\"n_reused\":%d,\"n_prefilled\":%d,\"restore_s\":%.3f,\"store_s\":%.3f,\"prefill_s\":%.3f,"
+                "\"prefill_cpu_s\":%.3f,\"prefill_read_mib\":%.1f,\"prefill_io_s\":%.3f,\"prefill_stall_s\":%.3f,"
+                "\"prefill_mgmt_s\":%.3f,\"prefill_dev_tokens\":%d,\"prefill_dev_read_mib\":%.1f,"
+                "\"prefill_dev_stall_s\":%.3f,\"prefill_dev_routed\":%lld,\"prefill_dev_demand\":%lld,"
+                "\"prefix_state_mib\":%.1f}\n",
+                cmd.id, r.cancelled ? "true" : "false", r.best, logp.c_str(), r.n_tokens, r.n_reused, r.n_prefilled,
+                r.restore_seconds, r.store_seconds, p.seconds, p.cpu_seconds, p.read_mib, p.io_seconds, p.stall_seconds,
+                p.mgmt_seconds, p.device_tokens, p.device_read_mib, p.device_stall_seconds, p.device_routed,
+                p.device_demand, (double) r.prefix_state_bytes / (1024.0 * 1024.0));
+    std::fflush(stdout);
+    return true;
+}
 
 static int run_session_loop(const RunConfig & cfg,
                             IMetricsSink * sink,
@@ -153,6 +197,14 @@ static int run_session_loop(const RunConfig & cfg,
             continue;
         }
 
+        if (cmd.kind == SessionCmd::kDecide) {
+            if (!emit_decide(*session, cmd)) {
+                rc = 1;
+                break;
+            }
+            continue;
+        }
+
         std::printf("BMOE_BEGIN {\"id\":%d}\n", cmd.id);
         std::fflush(stdout);
 
@@ -200,6 +252,8 @@ static int run_session_loop(const RunConfig & cfg,
             "\"prefill_cpu_s\":%.3f,\"prefill_read_mib\":%.1f,\"prefill_io_s\":%.3f,"
             "\"media_prepare_s\":%.3f,\"media_projector_s\":%.3f,"
             "\"prefill_stall_s\":%.3f,\"prefill_mgmt_s\":%.3f,"
+            "\"prefill_dev_tokens\":%d,\"prefill_dev_nodes\":%lld,\"prefill_dev_read_mib\":%.1f,"
+            "\"prefill_dev_stall_s\":%.3f,"
             "\"prefill_majflt\":%llu,"
             "\"token_demand_mib\":%.1f,\"mtp_drafted\":%lld,\"mtp_accepted\":%lld,\"mtp_decodes\":%lld,"
             "\"mtp_draft_s_tok\":%.4f,\"drafted_steps\":%lld,\"loop_overhead_s_tok\":%.4f,"
@@ -210,6 +264,7 @@ static int run_session_loop(const RunConfig & cfg,
             s.cache_resident_mib, s.cache_budget_mib, s.moe_read_mib, s.moe_stall_s_per_token, s.moe_mgmt_s_per_token,
             s.majflt_per_token, s.cpu_s_per_token, s.prefill_cpu_seconds, s.prefill_read_mib, s.prefill_io_seconds,
             s.media_prepare_seconds, s.media_projector_seconds, s.prefill_stall_seconds, s.prefill_mgmt_seconds,
+            s.prefill_device_tokens, s.prefill_device_nodes, s.prefill_device_read_mib, s.prefill_device_stall_seconds,
             (unsigned long long) s.prefill_majflt, s.token_demand_mib, s.mtp_drafted, s.mtp_accepted, s.mtp_decodes,
             s.mtp_draft_s_per_token, s.drafted_steps, s.loop_overhead_s_per_token,
             json_escape(r.reasoning_text).c_str(), json_escape(r.generated_text).c_str());
@@ -430,6 +485,7 @@ static void print_usage(const char * argv0) {
         "  Env overrides (flag wins): BMOE_CACHE_MB, BMOE_IO_THREADS, BMOE_PROGRESS, BMOE_OVERLAP, BMOE_PREFETCH, "
         "BMOE_N_EXPERT_USED, BMOE_PREDICT_LOG, BMOE_PREDICT_PREFETCH\n",
         argv0, SpecConfig::draft_max_limit, MoeStreamConfig::cache_min_mb, MoeStreamConfig::io_threads_max);
+    frontend::print_planner_usage();
 }
 
 // The prediction probe's report (see MoeStreamConfig::predict_log).
@@ -516,6 +572,8 @@ int main(int argc, char ** argv) {
     // Which flags the user actually typed. The env overrides below consult this rather than
     // comparing against the default, so passing a flag its default value still wins.
     std::set<std::string> seen;
+
+    frontend::PlannerFlags planner; // --auto, --plan, --probe*, --describe-params, --show-config
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -814,10 +872,14 @@ int main(int argc, char ** argv) {
         } else if (a == "--version") {
             std::printf("%s\n", meitte::version());
             return 0;
+        } else if (frontend::parse_planner_flag(a, planner, next)) {
+            // --auto, --plan, --probe*, --describe-params, --show-config (frontend_util.h)
         } else {
-            std::fprintf(stderr, "unknown arg: %s\n", a.c_str());
-            print_usage(argv[0]);
-            return 1;
+            // The engine's parameter table (bmoe/params.h) knows every knob this parser does not
+            // spell out by hand: the prefill device, decide(), the planner's placement and pinning.
+            const int rc = frontend::apply_table_flag(cfg, argc, argv, i, "bmoe");
+            if (rc == 1) print_usage(argv[0]);
+            if (rc) return rc;
         }
     }
 
@@ -905,6 +967,10 @@ int main(int argc, char ** argv) {
     if (cfg.moe.enabled && !cfg.moe.cache_auto && !seen.count("--cache-mb") && std::getenv("BMOE_CACHE_MB") == nullptr)
         cfg.moe.cache_auto = true;
 
+    double predicted_s_per_token = 0.0;
+    if (const int rc = frontend::run_planner_steps(cfg, planner, seen, "meitte-cli", predicted_s_per_token); rc >= 0)
+        return rc;
+
     if (list_buffer_types) {
         const std::vector<std::string> types = Session::available_tensor_buffer_types();
         if (types.empty()) {
@@ -930,6 +996,11 @@ int main(int argc, char ** argv) {
     if (session_mode && !cfg.media_paths.empty()) {
         std::fprintf(stderr, "bmoe: --image/--audio/--media are one-shot only and cannot be used with --session\n");
         return 2;
+    }
+    // Decide requests travel only through the session protocol; a one-shot run would ignore the flag.
+    if (cfg.decide.enabled && !session_mode) {
+        std::fprintf(stderr, "config error: --decide needs --session\n");
+        return 1;
     }
     if (cfg.kv_preserve && !session_mode) {
         std::fprintf(stderr, "bmoe: --kv-preserve requires --session\n");
@@ -1091,6 +1162,14 @@ int main(int argc, char ** argv) {
     }
     std::printf("generation: %d tokens, %.3f s/token (%.3f tok/s)\n", s.n_generated, s.s_per_token,
                 s.tokens_per_second);
+    // The loop that closes: a plan predicted this run before it started; here is what it got.
+    if (predicted_s_per_token > 0.0 && s.s_per_token > 0.0)
+        std::printf("plan: predicted %.3f s/token, measured %.3f (%+.0f%%)\n", predicted_s_per_token, s.s_per_token,
+                    100.0 * (predicted_s_per_token / s.s_per_token - 1.0));
+    if (s.prefill_device_tokens > 0)
+        std::printf("prefill device: %d of %d prompt tokens, %lld nodes, arena %.1f MiB read, %.3f s waited\n",
+                    s.prefill_device_tokens, s.n_prompt, s.prefill_device_nodes, s.prefill_device_read_mib,
+                    s.prefill_device_stall_seconds);
     // Compute decomposition (0 s/tok CPU means the platform couldn't measure it — Windows host).
     // occupancy = CPU-time ÷ (wall × threads): ~1 is compute-bound, well under 1 is a throttled or
     // preempted core; major faults/token > 0 means dense weights re-faulted from flash inside decode.

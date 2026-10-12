@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+- **Sync with BigMoeOnEdge 0.25–0.28 and its hardware planner.** Ported by hand onto Meitte's split
+  session units and C ABI, as recorded in `docs/bigmoe-sync.md`:
+  - `--prefill-device D` runs wide prefill graphs on an accelerator (a GPU, an NPU) and keeps decode on
+    the CPU, by moving the layer weights per graph. Off by default; a device that is missing leaves
+    the run on the CPU. With `--moe-stream` the experts reach the device through a one- or two-slot
+    arena (`--prefill-slots`, `--prefill-slots-on-demand`, `--prefill-loaders`) that reads only the
+    routed experts (`--prefill-routed`, `--prefill-routed-full`). `--prefill-best-effort` falls back to
+    the CPU instead of failing the load. Refused for now with multimodal input and with context
+    growth, summarization or trimming (`docs/limitations.md`). Gates G16 and G17 prove device prefill
+    == all-CPU bit for bit through a loopback RPC device.
+  - `Session::decide()` and `--decide`: choose one of a list from a single prefill and no decode, with
+    the state after a shared prefix kept between calls (`--decide-prefix-cache`) and an experimental
+    per-decision probe (`--decide-probe`). The session protocol gains `{"cmd":"decide",...}` and
+    `BMOE_DECIDE`; the C ABI gains `meitte_decide()`. Gate G18.
+  - The hardware planner: `--auto`, `--plan`, `--probe`, `--plan-explain`, with each compute device
+    probed in a child process (`--no-isolated-probes` to opt out). The probe order lives in the core
+    (`bmoe/auto_plan.h`), so `meitte-cli` and `meitte-server` plan the same way. It also brings
+    `--threads-batch`, `--gpu-layers`, `--devices`, `--dense-on-device`, `--cache-pin`/`--cache-pin-fit`
+    and pinned dense weights that degrade to ordinary memory part way instead of failing.
+  - The parameter table (`bmoe/params.h`): every engine knob described once. Both frontends accept
+    any table flag they do not parse by hand, `--describe-params` prints the table as JSON, and
+    `--show-config` prints the resolved configuration. `meitte_config` gains `params`/`params_count`
+    ("key=value" strings), so a C or FFI caller reaches every knob without a new field per knob, and
+    `meitte_describe_params()` lists them.
+  - `nemotron_h_moe` gets its tiny-model byte-identity gate (`make-tiny-moe.py --arch nemotron_h_moe`).
+  - Fix: a prefill piece that keeps no output row (decide()'s prefix) routes zero tokens at the last
+    layer, and the expert streamer treated that as a fatal load failure. It now stages nothing.
+  - `perplexity()` reads choice log-probabilities with the same normalisation as `decide()`, so both
+    agree bit for bit on one distribution.
+  - `examples/python/ctypes_smoke.py` fills its structs with `meitte_config_init`/`meitte_request_init`
+    instead of taking the library's by-value defaults, which wrote past its shorter struct mirror.
+
 - Fix `cancel()` during a token callback being lost when the next sampled token ends the
   generation. The cancel was seen only through a failed decode, and an end-of-generation token
   needs no decode, so the turn finished as completed and kept its KV. The decode loop now checks
