@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Fix `cancel()` during a token callback being lost when the next sampled token ends the
+  generation. The cancel was seen only through a failed decode, and an end-of-generation token
+  needs no decode, so the turn finished as completed and kept its KV. The decode loop now checks
+  the request before the end-of-generation test, so a cancelled turn is always reported and rolled
+  back, whichever token the model samples next.
 - **Removed dense streaming** (`--dense-stream`, `--dense-resident-mb`, `--dense-window-mb`,
   `--dense-io-lanes`, `--dense-overlap`, `--dense-two-wave`) from the core, `meitte-cli` and
   `meitte-server`: it read the streamed matrix set every token and was too slow (0.22–0.47 tok/s on

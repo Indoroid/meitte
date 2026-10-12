@@ -600,6 +600,14 @@ RunResult Session::generate(const GenerateRequest & req,
 
     bool eog = false;
     while (n_charged < req.n_predict) {
+        // A cancel is otherwise seen only as a failed decode. When it arrives during a token
+        // callback and the next sampled token ends the generation, no decode follows, and the turn
+        // would finish as if no cancel had been asked for. Check it first, so the result does not
+        // depend on which token the model samples next.
+        if (im.cancel_requested.load(std::memory_order_relaxed)) {
+            res.cancelled = true;
+            break;
+        }
         if (llama_vocab_is_eog(im.vocab, tok)) {
             eog = true;
             break;
