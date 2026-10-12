@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **`--odirect-zero-copy`** (BigMoeOnEdge `perf/odirect-zero-copy`): read expert slices straight
+  into the expert cache with no bounce copy, by placing each layer buffer at the file's own
+  sub-page remainder. Experimental and off by default; the engine reports `odirect-zero-copy ON` or
+  `INERT` at load, and the CSV preamble records it. Eviction also releases a slice's shared boundary
+  pages once its neighbour is gone, which keeps the placement from leaking two pages per eviction.
+  The dense loader never reads in place (`FileReader::read`'s `allow_in_place` is the caller's
+  promise). On Windows the overlapped path keeps the bounce (upstream issue #149). Upstream measured
+  +20% decode on a phone on short runs, before the boundary-page fix; it is owed a long-session
+  re-measurement. Gates G11, G12 and G4e.
 - **Sync with BigMoeOnEdge 0.25–0.28 and its hardware planner.** Ported by hand onto Meitte's split
   session units and C ABI, as recorded in `docs/bigmoe-sync.md`:
   - `--prefill-device D` runs wide prefill graphs on an accelerator (a GPU, an NPU) and keeps decode on

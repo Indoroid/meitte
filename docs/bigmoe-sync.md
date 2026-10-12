@@ -67,7 +67,8 @@ against `v0.24.0`, not a git merge.
   not parse by hand.
 - **Not taken:** `feat/ios-harness` (iOS is out of scope), upstream's `bmoe-server` binary (its HTTP
   surface goes into `meitte-server` instead), the macOS Metal build default, and the build-output
-  move to `build/bin`. `perf/odirect-zero-copy` predates 0.24 and is ported separately.
+  move to `build/bin`. `perf/odirect-zero-copy` predates 0.24 and was ported in its own change: a three-way merge
+  against its merge base `0375318`, with its flag added as a parameter-table row.
 - **Meitte-only refusals:** the prefill device is refused with multimodal input and with dynamic
   context policies until each has a gate (`docs/limitations.md`).
 - **Gate numbering:** upstream's G16–G18 are the prefill device and decide. Meitte's earlier

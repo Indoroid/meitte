@@ -57,6 +57,28 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     // it. Off for every guessing predictor: adopting a wrong guess would make the load wait on
     // reads it does not need.
     spec_adopt_ = cfg.route_ahead > 0;
+
+    // Only meaningful with O_DIRECT: the buffered path reads straight into the destination and has
+    // no bounce to skip. Taken from the REQUEST rather than the reader's effective mode because the
+    // layer buffers are reserved before the reader opens; if O_DIRECT is then refused and the reader
+    // falls back to buffered, the placement is merely unused, never wrong.
+    zero_copy_ = cfg.odirect_zero_copy && cfg.o_direct;
+#if defined(_WIN32)
+    // Windows + overlap + in-place produces WRONG BYTES, silently. Measured against a real model:
+    // the same revision, the same gguf and the same flags generate correct text on Android and
+    // garbage on Windows, with no read or commit error reported. Everything on this side is proven
+    // correct (requests, destination arithmetic, commit ranges, alignment, the partial-read retry),
+    // so the fault is below us in the Windows I/O or VM layer and the difference is that here the
+    // DMA target is freshly committed shared memory a compute thread is concurrently reading,
+    // where the bounce path had a private buffer and a CPU copy ordered against the ready flag.
+    // Serial is correct on Windows, so the bounce is only forced for the overlapped path.
+    // Tracked in https://github.com/Helldez/BigMoeOnEdge/issues/149.
+    if (zero_copy_ && overlap_) {
+        zero_copy_ = false;
+        std::fprintf(stderr, "bmoe: odirect-zero-copy disabled on Windows under --overlap (issue #149); "
+                             "reads go through the bounce buffer\n");
+    }
+#endif
     cache_max_ = (size_t) std::max(0, cfg.cache_mb) * 1024ull * 1024ull;
     io_threads_ = std::max(1, std::min(MoeStreamConfig::io_threads_max, cfg.io_threads));
     page_ = pio::vm_page(); // the real OS page size, for the dense-residency probe in any cache mode
@@ -167,7 +189,9 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
         // set above: the dense-residency probe needs it in every cache mode, not just this one.)
         for (int p = 0; p < MoeRecipe::max_exps; ++p) {
             lbuf_[p].assign(n_layer_, nullptr);
+            lbuf_base_[p].assign(n_layer_, nullptr);
             lbuf_sz_[p].assign(n_layer_, 0);
+            lbuf_zc_[p].assign(n_layer_, 0);
         }
         for (int il = 0; il < n_layer_; ++il) {
             LayerExperts & L = layers_[il];
@@ -175,13 +199,32 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
             for (int p = 0; p < MoeRecipe::max_exps; ++p) {
                 if (!L.proj[p].tensor) continue; // absent slot in a two-tensor layout
                 const size_t full = (size_t) L.proj[p].nb2 * (size_t) n_expert_;
-                lbuf_[p][il] = pio::vm_reserve(full);
-                if (!lbuf_[p][il]) {
-                    error = "reserving " + std::to_string(full) + " bytes of address space for layer " +
+                // Zero-copy placement: give the buffer the same sub-alignment remainder as the
+                // tensor's file offset, so every expert's read window maps onto it in place and
+                // FileReader can skip the bounce (see MoeStreamConfig::odirect_zero_copy). The
+                // per-expert stride nb2 must be a multiple of the alignment for the remainder to
+                // survive across experts, and the remainder must keep the tensor acceptably
+                // aligned for the compute kernels — otherwise the buffer stays page-aligned and
+                // the reader keeps copying, which is the pre-existing behaviour.
+                // Whether reads into THIS buffer may go in place, and where it therefore starts.
+                // The two are decided together and recorded per buffer: a remainder of 0 is a
+                // perfectly good placement (the file offset was already aligned), so "no shift"
+                // must not be confused with "declined" — the extra page is what makes the last
+                // expert's window fit inside the reservation, and it is needed either way.
+                const bool zc = zero_copy_ok(L.proj[p].file_off, L.proj[p].nb2);
+                const size_t shift = zc ? (size_t) (L.proj[p].file_off & (uint64_t) (align_ - 1)) : 0;
+                if (zero_copy_) (zc ? zc_placed_ : zc_declined_)++;
+                lbuf_zc_[p][il] = zc ? 1 : 0;
+                const size_t reserve = full + (zc ? align_ : 0);
+                void * raw = pio::vm_reserve(reserve);
+                if (!raw) {
+                    error = "reserving " + std::to_string(reserve) + " bytes of address space for layer " +
                             std::to_string(il) + " failed";
                     return false;
                 }
-                lbuf_sz_[p][il] = full;
+                lbuf_base_[p][il] = raw;
+                lbuf_sz_[p][il] = reserve;
+                lbuf_[p][il] = (char *) raw + shift;
                 L.proj[p].tensor->data = lbuf_[p][il];
             }
         }
@@ -297,6 +340,14 @@ bool ExpertStreamSource::init(const std::vector<std::string> & shard_paths,
     // effective_direct_ (set where the readers opened) is the run's o_direct fact — see above.
     std::fprintf(stderr, "bmoe: expert streaming ON  n_expert=%d o_direct=%d io_threads=%d cache=%zu MiB shards=%zu\n",
                  n_expert_, (int) effective_direct_, io_threads_, cache_max_ >> 20, readers_.size());
+    // Say whether the zero-copy placement actually took, and not merely that it was asked for: the
+    // conditions are properties of the FILE (its alignment, its per-expert stride) and of whether
+    // O_DIRECT survived verification, so a run can request it and correctly get nothing. A silent
+    // no-op would make a passing gate mean nothing. effective_direct_ is the weakest verdict across
+    // shards: one shard reading through the page cache makes the placement moot for its experts.
+    if (zero_copy_)
+        std::fprintf(stderr, "bmoe: odirect-zero-copy %s — %d/%d layer buffers placed to skip the bounce copy\n",
+                     (zc_placed_ > 0 && effective_direct_) ? "ON" : "INERT", zc_placed_, zc_placed_ + zc_declined_);
     return true;
 }
 
@@ -319,7 +370,11 @@ bool ExpertStreamSource::reopen_readers() {
 bool ExpertStreamSource::read_slice(int lane, const IoJob & j) {
     if (j.nbytes == 0) return true;
     const auto t0 = clock_t_::now();
-    const long long window = readers_[(size_t) j.file]->read(lane, j.dst, j.off, j.nbytes);
+    // In-place is promised only for the per-layer cache buffers that were placed for it: they own
+    // the pages the aligned window overhangs into. The cache-off path shares one slot per
+    // projection across every layer and makes no such promise, so it keeps the bounce.
+    const bool in_place = cache_max_ != 0 && j.layer >= 0 && j.proj >= 0 && lbuf_zc_[j.proj][j.layer] != 0;
+    const long long window = readers_[(size_t) j.file]->read(lane, j.dst, j.off, j.nbytes, in_place);
     if (window < 0) return false;
 
     if (io_trace_on_) {
@@ -770,12 +825,44 @@ size_t ExpertStreamSource::entry_bytes(int il) const {
 // with a neighbouring expert). Shared by eviction and by discarding an incomplete spec entry.
 void ExpertStreamSource::release_entry_pages(int32_t id) {
     const int il = id / n_expert_, e = id % n_expert_;
+    // A page that an entry only PARTLY covers is shared with the neighbouring expert, so the
+    // interior is all this entry may release on its own. With the page-aligned placement there is
+    // no such page — a slice is a whole number of pages at a page boundary, so the interior IS the
+    // whole slice and this is exact.
+    //
+    // The zero-copy placement shifts the buffer off the page boundary on purpose, which makes the
+    // first and last page of EVERY slice shared. Releasing only the interior then leaks two pages
+    // per eviction: the entry's bytes are accounted as freed while the kernel still holds them.
+    // Measured in the app, where a session evicts thousands of entries: the process's anonymous
+    // footprint grew ~40 MiB a turn and went to zram, and the decode paid it back as major faults
+    // (1-7 per token without the placement, 66 and then 332 with it, rising turn over turn).
+    //
+    // So a boundary page is released too, once the neighbour that shares it is gone. `cvalid_`
+    // covers demand reads — an entry being read is valid from the moment it is staged — and
+    // `spec_remaining_` covers speculative ones. Both are read without the lanes' mutex, which is
+    // safe in one direction only, and that is the direction needed: staging happens on this thread,
+    // so nothing can raise them concurrently; a lane can only lower spec_remaining_ toward zero, so
+    // a stale read is stale-high and merely skips a release that the next eviction will make.
+    auto neighbour_gone = [&](int ne) {
+        if (ne < 0 || ne >= n_expert_) return true; // the buffer's own padding, owned by nobody else
+        const int32_t nid = il * n_expert_ + ne;
+        return !cvalid_[nid] && spec_remaining_[nid] == 0;
+    };
+    const bool lead_free = neighbour_gone(e - 1);
+    const bool tail_free = neighbour_gone(e + 1);
+
     for (int p = 0; p < MoeRecipe::max_exps; ++p) {
         const uint64_t slice = layers_[il].proj[p].nb2;
         if (slice == 0) continue; // absent slot in a two-tensor layout
+        // Per projection: only a buffer that actually got the shifted placement has shared edges.
+        const bool shared = !lbuf_zc_[p].empty() && lbuf_zc_[p][il] != 0;
+        const bool take_lead = shared && lead_free;
+        const bool take_tail = shared && tail_free;
         char * s = (char *) lbuf_[p][il] + (uint64_t) e * slice;
-        uintptr_t a0 = ((uintptr_t) s + page_ - 1) & ~(uintptr_t) (page_ - 1);
-        uintptr_t a1 = ((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1);
+        uintptr_t a0 = take_lead ? ((uintptr_t) s & ~(uintptr_t) (page_ - 1))
+                                 : (((uintptr_t) s + page_ - 1) & ~(uintptr_t) (page_ - 1));
+        uintptr_t a1 = take_tail ? (((uintptr_t) s + slice + page_ - 1) & ~(uintptr_t) (page_ - 1))
+                                 : (((uintptr_t) s + slice) & ~(uintptr_t) (page_ - 1));
         if (a1 > a0) pio::vm_evict((void *) a0, (size_t) (a1 - a0));
     }
 }
@@ -921,6 +1008,23 @@ uint64_t ExpertStreamSource::expert_bytes(int il) const {
 
 // The cache accounting both load paths share. See the header for why this is the part that is shared
 // and the job emission is not. Eval-thread only, like every other LRU mutation.
+// How far past an alignment boundary to place a layer buffer so its reads need no bounce copy:
+// the tensor's own remainder, or 0 to keep the pre-existing page-aligned placement. See
+// MoeStreamConfig::odirect_zero_copy for what the placement buys.
+//
+// Two conditions beyond the flag itself (which already implies O_DIRECT was asked for):
+//   * the per-expert stride must be a multiple of the alignment, or expert e's remainder would
+//     drift from expert 0's and only some reads could go in place;
+//   * the remainder must leave the tensor's data at least 64-byte aligned. ggml's own contract is
+//     16, but a base that splits cache lines would tax every matmul row to save a copy, and the
+//     trade is not obviously positive. A gguf's `general.alignment` is a power of two (32 by
+//     default), so in practice this either holds comfortably or the file wanted something exotic.
+bool ExpertStreamSource::zero_copy_ok(uint64_t file_off, uint64_t nb2) const {
+    if (!zero_copy_ || align_ == 0) return false;
+    if ((nb2 & (uint64_t) (align_ - 1)) != 0) return false;
+    return (file_off & (uint64_t) (align_ - 1)) % 64 == 0;
+}
+
 bool ExpertStreamSource::commit_proj_pages(int il, int e, int p) {
     const LayerExperts & L = layers_[il];
     const uint64_t slice = L.proj[p].nb2;
@@ -1541,9 +1645,11 @@ void ExpertStreamSource::shutdown() {
             slot_[p] = nullptr;
         }
     for (int p = 0; p < MoeRecipe::max_exps; ++p) {
-        for (int il = 0; il < (int) lbuf_[p].size(); ++il)
-            if (lbuf_[p][il]) pio::vm_release(lbuf_[p][il], lbuf_sz_[p][il]);
+        // Release the RESERVATION, not the (possibly shifted) address the tensors were bound to.
+        for (int il = 0; il < (int) lbuf_base_[p].size(); ++il)
+            if (lbuf_base_[p][il]) pio::vm_release(lbuf_base_[p][il], lbuf_sz_[p][il]);
         lbuf_[p].clear();
+        lbuf_base_[p].clear();
         lbuf_sz_[p].clear();
     }
     // The dense-weights module frees its own anon buffers here. Safe: the context (whose rebound

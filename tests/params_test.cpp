@@ -172,6 +172,7 @@ int main() {
     expect_flag({"--cache-ceil-mb", "3000"}, [](const RunConfig & c) { return c.moe.cache_ceil_mb == 3000; });
     expect_flag({"--io-threads", "2"}, [](const RunConfig & c) { return c.moe.io_threads == 2; });
     expect_flag({"--no-odirect"}, [](const RunConfig & c) { return !c.moe.o_direct; });
+    expect_flag({"--odirect-zero-copy"}, [](const RunConfig & c) { return c.moe.odirect_zero_copy; });
     expect_flag({"--release-mmap"}, [](const RunConfig & c) { return c.moe.release_mmap; });
     expect_flag({"--row-stream"}, [](const RunConfig & c) { return c.moe.row_stream; });
     expect_flag({"--row-stream-mb", "32"}, [](const RunConfig & c) { return c.moe.row_stream_mb == 32; });

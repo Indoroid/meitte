@@ -308,6 +308,17 @@ std::vector<ParamDesc> build() {
         t.push_back(d);
     }
     {
+        ParamDesc d = row("odirect-zero-copy", "Zero-copy reads", G::Streaming, L::Experimental,
+                          "Read expert slices straight into the cache with no bounce copy, by placing each "
+                          "layer buffer at the file's own sub-page remainder. Needs direct I/O; the engine "
+                          "reports ON or INERT at load. Output is byte-identical.");
+        d.type = ParamType::Bool;
+        d.flag.clear();
+        d.switches = {{"--odirect-zero-copy", "true"}};
+        bind_bool(d, [](RunConfig & c) -> bool & { return c.moe.odirect_zero_copy; });
+        t.push_back(d);
+    }
+    {
         ParamDesc d = row("overlap", "Overlap I/O", G::Streaming, L::Advanced,
                           "Overlap async expert reads with the FFN compute instead of blocking on them. "
                           "Output is byte-identical. Needs the fork's expert-ready hook in this build.");

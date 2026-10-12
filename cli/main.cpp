@@ -407,6 +407,7 @@ static void print_usage(const char * argv0) {
         "      --cache-ceil-mb N   with --cache-mb auto: upper bound on the budget (0 = no cap)\n"
         "      --io-threads N      parallel expert-read lanes [1..%d] (default 4)\n"
         "      --no-odirect        do not bypass the page cache for expert reads\n"
+        "      --odirect-zero-copy read expert slices straight into the cache, with no bounce copy\n"
         "      --dense-weights M   dense (non-expert) weight policy: mmap | warm | anon (default) | ahwb;\n"
         "                          requires --moe-stream (the streamer applies it)\n"
         "                          (warm = page-cache them at load, best when the model fits in RAM;\n"

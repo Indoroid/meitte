@@ -672,6 +672,7 @@ void Session::Impl::build_run_info(LazyGgufMeta & meta) {
     ri.force_cache = moe.force_cache;
     ri.load_all = moe.enabled && moe.load_all;
     ri.io_threads = moe.enabled ? moe.io_threads : 0;
+    ri.odirect_zero_copy = moe.enabled && moe.o_direct && moe.odirect_zero_copy;
     ri.overlap = moe.enabled && moe.overlap;
     ri.io_two_wave = moe.enabled && moe.io_two_wave;
     ri.prefetch_layers = moe.enabled ? moe.prefetch_layers : 0;
